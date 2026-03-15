@@ -1,0 +1,90 @@
+[workspace]
+resolver = "3"
+members = [
+    "common",
+    "libs/shared",
+    "libs/test-utils",
+    "services/auth-service",
+    # Add each service as its phase begins:
+    # "services/user-service",
+    # "services/document-service",
+    # "services/collaboration-service",
+    # "services/search-service",
+    # "services/storage-service",
+    # "services/notification-service",
+    # "services/analytics-service",
+    # "services/webhook-service",
+    # "services/audit-service",
+    # "services/template-service",
+    # "services/api-gateway",
+    # "frontend",
+]
+
+[workspace.dependencies]
+# --- Async runtime ---
+tokio         = { version = "1", features = ["full"] }
+
+# --- Web framework ---
+axum          = { version = "0.8", features = ["macros"] }
+tower         = { version = "0.5" }
+tower-http    = { version = "0.6", features = ["cors", "trace", "request-id", "timeout", "compression-gzip"] }
+hyper         = { version = "1" }
+
+# --- Serialisation ---
+serde         = { version = "1", features = ["derive"] }
+serde_json    = { version = "1" }
+serde-aux     = { version = "4" }
+
+# --- Error handling ---
+thiserror     = { version = "2" }
+anyhow        = { version = "1" }
+
+# --- Tracing / observability ---
+tracing                   = { version = "0.1" }
+tracing-subscriber        = { version = "0.3", features = ["env-filter", "json"] }
+tracing-bunyan-formatter  = { version = "0.3" }
+tracing-log               = { version = "0.2" }
+
+# --- Configuration ---
+config        = { version = "0.14" }
+secrecy       = { version = "0.10", features = ["serde"] }
+
+# --- Database (SurrealDB) ---
+# Services connect remotely to the Docker container.
+# libs/test-utils adds `kv-mem` for fast in-process tests.
+surrealdb     = { version = "2" }
+
+# --- Cache (Redis) ---
+fred          = { version = "10", features = ["tokio-runtime"] }
+
+# --- Messaging (NATS JetStream) ---
+async-nats    = { version = "0.39" }
+
+# --- Object storage ---
+aws-sdk-s3    = { version = "1" }
+aws-config    = { version = "1" }
+
+# --- Auth ---
+jsonwebtoken  = { version = "9" }
+argon2        = { version = "0.5" }
+
+# --- IDs ---
+uuid          = { version = "1", features = ["v7", "serde"] }
+
+# --- In-process cache (L1) ---
+moka          = { version = "0.12", features = ["future"] }
+
+# --- Utilities ---
+chrono        = { version = "0.4", features = ["serde"] }
+paste         = { version = "1" }
+async-trait   = { version = "0.1" }
+bytes         = { version = "1" }
+futures       = { version = "0.3" }
+rand          = { version = "0.8" }
+
+# --- Leptos (frontend) ---
+leptos        = { version = "0.7", features = ["ssr"] }
+leptos_axum   = { version = "0.7" }
+
+# --- Dev / test ---
+tokio-test    = { version = "0.4" }
