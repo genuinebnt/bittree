@@ -16,6 +16,7 @@
 | Object Storage | MinIO (local) / S3 (cloud) |
 | Search | Tantivy (in-process) |
 | IaC | Pulumi (Rust SDK) |
+| gRPC | tonic + prost (api-gateway↔auth, doc↔collab, analytics ETL) |
 | Observability | OpenTelemetry → Jaeger + Prometheus + Grafana |
 
 ---
@@ -253,6 +254,7 @@ Stateless JWT auth, refresh token rotation, OAuth2 login.
 | `From`/`Into`/`TryFrom` | Converting DB rows → domain types |
 | Async trait objects | Repository trait (`Box<dyn AuthRepo>`) |
 | Constant-time comparisons | Password and token verification |
+| `tonic` server, proto3 schema, gRPC unary RPC | `ValidateToken` RPC called by `api-gateway` on every request (`libs/proto/proto/auth.proto`) |
 
 ### System Design Concepts
 - JWT anatomy (header, payload, signature) — RS256 vs HS256
@@ -361,6 +363,7 @@ Real-time WebSocket sessions, cursor presence, CRDT-based text sync.
 | `tokio::select!` | Multiplex incoming WS + NATS events |
 | **Unsafe Rust** | CRDT rope internals (index arithmetic, raw slice ops) |
 | `PhantomData` | Encoding CRDT operation ordering invariants |
+| `tonic` bidirectional streaming, gRPC interceptors | `SyncOps` bidi streaming RPC — `document-service` ↔ `collaboration-service` op delivery (`libs/proto/proto/collab.proto`) |
 
 ### System Design Concepts
 - CRDTs: G-Counter, LWW-Register, RGA/YATA for sequences
@@ -472,6 +475,7 @@ Event ingestion, transformation pipeline, aggregated metrics.
 | `rayon` parallel iterators | Parallel aggregation of large event batches |
 | `serde` schema evolution | Handling old event formats gracefully |
 | Scheduled async tasks | `tokio-cron-scheduler` |
+| `tonic` client-streaming, batched ingestion | `IngestEvents` client-streaming RPC — ETL batch push to ingestion endpoint (`libs/proto/proto/analytics.proto`) |
 
 ### System Design Concepts
 - Lambda architecture (batch + speed layer)

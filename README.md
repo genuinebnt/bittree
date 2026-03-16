@@ -29,6 +29,7 @@ Workspace
 | Layer | Technology |
 |---|---|
 | HTTP framework | [Axum](https://docs.rs/axum) + [Tower](https://docs.rs/tower) + [Tokio](https://tokio.rs/tokio/tutorial) |
+| gRPC | [tonic](https://docs.rs/tonic) + [prost](https://docs.rs/prost) (selected service pairs) |
 | Database | [PostgreSQL 16](https://www.postgresql.org/) + [`sqlx`](https://docs.rs/sqlx) (compile-time checked queries, JSONB, LTREE) |
 | Cache / Sessions | [Redis](https://redis.io/) via [`fred`](https://docs.rs/fred) |
 | Messaging | [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream) via [`async-nats`](https://docs.rs/async-nats) |
@@ -71,7 +72,7 @@ bittree/
 ├── libs/
 │   ├── shared/                 ← DTOs, newtype IDs — compiles to wasm32 + native
 │   ├── bel/                    ← BitTree Expression Language (lexer/parser/eval)
-│   ├── proto/                  ← protobuf definitions (tonic + prost)
+│   ├── proto/                  ← protobuf definitions (tonic + prost) — auth, collab, analytics gRPC contracts
 │   └── test-utils/             ← TestContext, Testcontainers wrappers, mock builders
 ├── services/
 │   ├── auth-service/

@@ -63,6 +63,18 @@
 - [ ] Rate limiting on login endpoint (Tower layer, Redis sliding window)
 - [ ] CSRF protection on cookie-based flows
 
+### gRPC Interface
+
+`auth-service` exposes a gRPC server (tonic) consumed by `api-gateway` to validate JWTs on every inbound request.
+
+| Item | Detail |
+|---|---|
+| Proto file | `libs/proto/proto/auth.proto` |
+| RPC | `rpc ValidateToken(TokenRequest) returns (TokenResponse)` |
+| RPC type | Unary |
+| Caller | `api-gateway` — called on the hot path of every authenticated request |
+| Learning | proto3 syntax and field types, tonic server setup (`#[tonic::async_trait]`), `build.rs` codegen with `tonic-build`, binary protobuf vs JSON overhead |
+
 ---
 
 ## Phase 2 — User & Workspace Service
@@ -310,6 +322,18 @@ All properties are stored as a typed schema on the `database` block and as typed
 - [ ] Benchmark against `Vec<Box<Op>>` — the arena eliminates per-op heap allocation and improves cache locality since all ops are contiguous in memory
 - [ ] **Allocator lesson:** Read [How memory allocators work — jemalloc internals](https://engineering.fb.com/2011/01/03/core-infra/scalable-memory-allocation-using-jemalloc/) to understand why the global allocator is slow for small, frequent allocations
 
+### gRPC Interface
+
+`collaboration-service` exposes a gRPC server (tonic) that `document-service` connects to for continuous op delivery over a bidirectional streaming RPC.
+
+| Item | Detail |
+|---|---|
+| Proto file | `libs/proto/proto/collab.proto` |
+| RPC | `rpc SyncOps(stream OpMessage) returns (stream OpMessage)` |
+| RPC type | Bidirectional streaming |
+| Caller | `document-service` — opens one long-lived bidi stream per active editing session |
+| Learning | tonic streaming (`Streaming<T>` request, `ReceiverStream` response), the `Stream` trait and `Pin<Box<dyn Stream>>`, back-pressure via gRPC flow control, gRPC interceptors for tracing context propagation |
+
 ---
 
 ## Phase 5 — Search Service
@@ -446,6 +470,18 @@ All properties are stored as a typed schema on the `database` block and as typed
 - [ ] **`rayon` parallel prefix sum:** For the largest workspaces, parallelise the Transform step with `rayon::iter` — understand why a naive parallel prefix sum requires a two-pass approach (parallel reduce → parallel scan) and implement both
 
 **Low-level lesson:** Measure before optimising. Use `criterion` for microbenchmarks and `cargo-flamegraph` or `perf` for production profiles. SIMD is the last resort, not the first tool. Read: [The Rust Performance Book](https://nnethercote.github.io/perf-book/).
+
+### gRPC Interface
+
+`analytics-service` exposes a gRPC server (tonic) used internally by the ETL pipeline to ingest large batches of raw events via client-streaming RPC.
+
+| Item | Detail |
+|---|---|
+| Proto file | `libs/proto/proto/analytics.proto` |
+| RPC | `rpc IngestEvents(stream EventRecord) returns (IngestSummary)` |
+| RPC type | Client-streaming |
+| Caller | `analytics-service` ETL batch producer (internal — same service, different task) |
+| Learning | tonic client-streaming (`Streaming<T>` on the server side, `tokio_stream::iter` on the client side), batching strategies, flow control and back-pressure in client-streaming RPCs |
 
 ---
 

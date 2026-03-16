@@ -46,10 +46,11 @@ graph TD
     BROWSER -- "HTTPS / WSS" --> GW
     SSR     -- "HTTPS / WSS" --> GW
 
-    GW -- "HTTP" --> AUTH
+    GW -- "gRPC (unary)" --> AUTH
     GW -- "HTTP" --> USER
     GW -- "HTTP" --> DOC
     GW -- "WSS (consistent hash on page_id)" --> COLLAB
+    DOC -- "gRPC (bidi streaming)" --> COLLAB
     GW -- "HTTP" --> SEARCH
     GW -- "HTTP" --> STORAGE
     GW -- "HTTP" --> NOTIF
@@ -284,3 +285,19 @@ Internet
 ```
 
 IaC: `infra/` directory — Pulumi Rust SDK provisions all resources above.
+
+---
+
+## 8. gRPC Transport — Service Pairs
+
+The default inter-service transport is HTTP (Axum) for synchronous calls and NATS JetStream for async events. gRPC (tonic + prost) is used only for the three pairs below, each with a concrete technical justification.
+
+| Service Pair | RPC Type | Proto file | Reason |
+|---|---|---|---|
+| `api-gateway` → `auth-service` | Unary RPC | `libs/proto/proto/auth.proto` | JWT validation on every request — high frequency; binary protobuf + HTTP/2 multiplexing reduces per-call overhead |
+| `document-service` → `collaboration-service` | Bidirectional streaming RPC | `libs/proto/proto/collab.proto` | Continuous op delivery in both directions for the lifetime of a live editing session |
+| `analytics-service` internal ETL batch ingestion | Client-streaming RPC | `libs/proto/proto/analytics.proto` | Stream large event batches with gRPC flow control; no per-record round-trip overhead |
+
+All `.proto` definitions and `prost`/`tonic-build` codegen live in the `libs/proto` crate. Services that do not participate in any of these three pairs are unaffected and do not depend on `libs/proto`.
+
+See [`docs/architecture/adr/ADR-003-grpc-selective-transport.md`](adr/ADR-003-grpc-selective-transport.md) for the full decision record.

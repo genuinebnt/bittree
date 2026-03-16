@@ -4,7 +4,7 @@
 
 **BitTree** is a collaborative, block-based note-taking app (Notion-inspired). Documents are trees of typed blocks. Multiple users edit simultaneously. Everything is scoped to workspaces with RBAC.
 
-**Stack:** Full-stack Rust — Axum + Tokio backend microservices, Leptos SSR/WASM frontend, PostgreSQL 16 + sqlx (compile-time checked queries, JSONB, LTREE), NATS JetStream for events, Redis for cache/sessions, MinIO/S3 for files.
+**Stack:** Full-stack Rust — Axum + Tokio backend microservices, Leptos SSR/WASM frontend, PostgreSQL 16 + sqlx (compile-time checked queries, JSONB, LTREE), NATS JetStream for events, Redis for cache/sessions, MinIO/S3 for files, tonic + prost (gRPC for selected service pairs).
 
 **Learning goals:** Intermediate–advanced Rust · microservice architecture · system design · distributed systems · backend security · cloud/IaC · DSA · DevOps · data modelling · ETL pipelines.
 
