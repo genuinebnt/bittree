@@ -33,8 +33,8 @@
 - [x] Cargo workspace scaffold (`common`, `libs/`, `services/`)
 - [ ] `common` crate: shared config, error types, telemetry, newtype macros, domain primitives
 - [ ] `libs/proto` crate: protobuf definitions (tonic + prost)
-- [ ] `libs/test-utils` crate: test helpers, `Testcontainers` wrappers, mock builders
-- [ ] Docker Compose: SurrealDB, Redis, NATS, MinIO, Jaeger, Prometheus, Grafana
+- [ ] `libs/test-utils` crate: `#[sqlx::test]` wrappers, Testcontainers, mock builders
+- [ ] Docker Compose: PostgreSQL, Redis, NATS, MinIO, Jaeger, Prometheus, Grafana
 - [ ] CI pipeline: `cargo fmt`, `cargo clippy`, `cargo test`, `cargo audit`
 - [ ] Git hooks: pre-commit lint + format
 
@@ -67,7 +67,7 @@
 
 ## Phase 2 — User & Workspace Service
 
-> **Rust concepts:** Repository trait pattern, `From`/`Into` conversions, builder pattern, `SeaORM` entities
+> **Rust concepts:** Repository trait pattern, `From`/`Into` conversions, builder pattern, `sqlx` typed queries and row mapping
 > **System design:** Multi-tenancy, RBAC, invitation flows
 
 ### Users
@@ -161,8 +161,9 @@ Page-level override  →  Team Space role  →  Workspace role  →  Guest grant
 
 ## Phase 3 — Document Service
 
-> **Rust concepts:** Recursive tree types, `Box<T>`, arena allocation, `serde` with enums/adjacently-tagged, `sqlx` or `SeaORM` with `jsonb`
+> **Rust concepts:** Recursive tree types, `Box<T>`, arena allocation, `serde` with enums/adjacently-tagged, `sqlx` with `jsonb` columns
 > **System design:** Block-tree data model, optimistic locking, event sourcing basics, CRDT preparation
+> **Distributed Systems:** CAP theorem (page permissions = CP, backlinks = AP), PACELC trade-offs with PostgreSQL replication, WAL durability guarantees, quorum (conceptual)
 
 ### Pages
 - [ ] `POST /workspaces/:wid/pages` — create root page
@@ -264,11 +265,24 @@ All properties are stored as a typed schema on the `database` block and as typed
 - [ ] Per-service session/permission cache — implement with **LRU** eviction (recency matters more than frequency for session data)
 - [ ] Cache invalidation: NATS `BlockUpdated` / `PageUpdated` events evict the relevant key
 
+### Cache-Conscious Block Tree & Arena Allocation
+- [ ] **SoA vs AoS benchmark:** Implement block traversal (DFS to collect all `block_type` values) twice — once with `Vec<Block>` (AoS) and once with parallel `Vec<BlockId>` + `Vec<BlockType>` + `Vec<SortKey>` (SoA). Benchmark on a 1000-block page; measure with `criterion` and explain the cache miss difference.
+- [ ] **Arena-allocated page load:** On `GET /pages/:id`, allocate all block structs into a `bumpalo::Bump` arena, build the response tree, serialise to JSON, then drop the entire arena in one call — no per-block `Box` heap allocation
+- [ ] **False sharing lesson:** The page cache stores one `Arc<Page>` per cached page. If two threads update hit-count metadata on adjacent `Arc` blocks, they may share a cache line. Add `#[repr(align(64))]` padding to the per-page cache metadata struct and measure the difference with `perf stat -e cache-misses`
+- [ ] **`#[repr(C)]` lesson:** Understand why Rust may reorder struct fields by default and when `#[repr(C)]` forces predictable layout — relevant before any unsafe pointer arithmetic on block content
+
+### CAP / PACELC Analysis
+- [ ] **CAP theorem lesson:** Document the consistency choice for each data store operation — page permissions and block writes must be **consistent** (CP: reject the write if the node can't confirm quorum), but the backlink index and search index can be **available** (AP: serve a stale read rather than return an error during a partition). Write this decision into `docs/architecture/CLOUD_PORTABILITY.md` for each service.
+- [ ] **PACELC lesson:** Under normal operation (no partition), understand PostgreSQL's default `READ COMMITTED` isolation level and when to use `REPEATABLE READ` or `SERIALIZABLE`. Consider the latency vs consistency trade-off in a multi-AZ RDS setup (synchronous replication = higher latency, more consistency; async read replica = lower latency, potential stale reads). Read: [DDIA Chapter 5 — Replication](https://dataintensive.net/) and [PostgreSQL Transaction Isolation docs](https://www.postgresql.org/docs/current/transaction-iso.html).
+- [ ] **WAL lesson:** Before trusting PostgreSQL's crash recovery, understand what a **Write-Ahead Log** guarantees: the log entry is fsynced before the data file is updated, so a crash mid-write is always recoverable. PostgreSQL's WAL is directly observable via `pg_wal` and `pg_walfile_name()`. Read: [DDIA Chapter 3 — Storage and Retrieval (B-trees and WAL)](https://dataintensive.net/).
+
 ---
 
 ## Phase 4 — Collaboration Service
 
 > **Rust concepts:** `tokio` tasks, channels (`mpsc`, `broadcast`), `Arc<RwLock<T>>`, unsafe + raw pointers for CRDT internals, `Pin`/`Unpin`
+> **Low-level:** Lock-free data structures (`crossbeam` queues, `dashmap`, CAS loops, epoch-based reclamation), arena allocator for op log, `MaybeUninit` for rope nodes, memory ordering
+
 > **System design:** CRDTs (YATA / RGA), operational transform trade-offs, WebSocket session management, presence
 
 ### Real-Time
@@ -283,6 +297,18 @@ All properties are stored as a typed schema on the `database` block and as typed
 - [ ] Server applies to authoritative state, broadcasts to peers
 - [ ] Client reconnect: catchup via ops since `last_seen_seq`
 - [ ] Conflict-free merge on reconnect (no user-visible merge conflicts)
+
+### Lock-Free Internals
+- [ ] **Op sequence number:** Each CRDT operation gets a monotonically increasing sequence number — implement with `AtomicU64::fetch_add(1, Ordering::Relaxed)`; understand why `Relaxed` is sufficient here (no memory ordering dependency on the counter itself)
+- [ ] **Lock-free session map:** Replace `RwLock<HashMap<PageId, Session>>` with `DashMap` — benchmark both under 100 concurrent connections and measure lock contention with `tokio-console`
+- [ ] **Lock-free op fanout queue:** Use `crossbeam::queue::SegQueue` (unbounded MPMC) to decouple incoming op receipt from broadcast fanout — one producer per WebSocket reader task, multiple consumer broadcast tasks
+- [ ] **Epoch-based reclamation:** CRDT operation nodes that are no longer reachable from any active iterator must be safely freed — use `crossbeam-epoch` to defer deallocation until no thread holds a reference; understand why this is necessary (ABA problem with raw pointer CAS)
+- [ ] **`MaybeUninit` for rope array:** The rope's internal leaf array is allocated as `Box<[MaybeUninit<Span>; LEAF_CAP]>` — initialise slots on demand, avoiding zeroing memory that will be immediately overwritten
+
+### Arena Allocator for Op Log
+- [ ] All operations within a collaboration session are allocated into a `typed-arena::Arena<Op>` — ops are created frequently, never individually freed, and the entire arena is dropped when the session ends
+- [ ] Benchmark against `Vec<Box<Op>>` — the arena eliminates per-op heap allocation and improves cache locality since all ops are contiguous in memory
+- [ ] **Allocator lesson:** Read [How memory allocators work — jemalloc internals](https://engineering.fb.com/2011/01/03/core-infra/scalable-memory-allocation-using-jemalloc/) to understand why the global allocator is slow for small, frequent allocations
 
 ---
 
@@ -369,22 +395,35 @@ All properties are stored as a typed schema on the `database` block and as typed
 
 **DSA lesson:** Implement all three rate limiters back-to-back. The sliding window is the most interesting — it's literally a **two-pointer** problem on a time-sorted sequence. Read: [Figma's rate limiting blog post](https://www.figma.com/blog/an-alternative-approach-to-rate-limiting/).
 
+### Lock-Free Rate Limit Counter
+- [ ] The **token bucket** counter (`tokens: AtomicU64`, `last_refill: AtomicU64`) must be updated atomically — implement using a CAS loop: `fetch_update` to read-modify-write both fields without a mutex
+- [ ] **Memory ordering lesson:** The token update needs `Ordering::AcqRel` (acquire on load, release on store) so the updated count is visible to all threads immediately. Contrast with the sequence number in Phase 4 where `Relaxed` was sufficient — write out *why* the ordering requirement is different
+- [ ] **False sharing prevention:** Each user's counter is a separate struct. If two high-traffic users' counters land on the same 64-byte cache line, their cores thrash. Pad the struct to 64 bytes with `#[repr(align(64))]` and measure the throughput difference under 1000 concurrent users
+
 ---
 
 ## Phase 9 — Analytics & ETL Service
 
 > **Rust concepts:** Iterator adapters, `rayon` for data parallelism, custom `Display`/`Debug` impls, `serde` for schema evolution
 > **System design:** Lambda / Kappa architecture, event sourcing for analytics, materialized views
+> **Distributed Systems:** Leader election, distributed lock + fencing token, two-generals problem (at-least-once delivery), CAP/PACELC trade-offs
+> **Low-level:** SIMD batch aggregation, auto-vectorisation, software prefetching, seqlock for read-heavy counters
 
 ### Event Ingestion
 - [ ] All services publish `DomainEvent` to NATS topic `events.*`
 - [ ] Analytics service subscribes and persists raw events to append-only table
 
 ### ETL Pipeline
-- [ ] **Extract:** Raw events from SurrealDB append-only table
+- [ ] **Extract:** Raw events from PostgreSQL `analytics.events` append-only table
 - [ ] **Transform:** Aggregate into daily active users, page views, edits per user, popular pages
 - [ ] **Load:** Materialized summary tables (for dashboards)
 - [ ] Scheduled job: run pipeline every hour via `tokio` task with cron
+
+### ETL Leader Election + Distributed Lock
+- [ ] When multiple `analytics-service` replicas are running, only one must execute the hourly ETL job — implement **leader election** via Redis SETNX: `SET etl:leader {instance_id} NX EX 120` (acquire) + `GET` / `DEL` with Lua script (release atomically)
+- [ ] The lock value is the **fencing token**: a Redis `INCR etl:fence` value stored alongside the lock. The ETL job includes this token in every PostgreSQL write (`UPDATE ... WHERE fence_token < $token`). If a paused/GC'd leader wakes up with an old token its writes are rejected.
+- [ ] Leader renewal: the leader refreshes its TTL every 30s during a long-running job; if the renewal loop fails (process died), the lock expires naturally and a standby instance takes over
+- [ ] **Distributed Systems lesson:** Redis SETNX is a **single-node** distributed lock — it fails under Redis failover (see the Redlock controversy). For production, understand why Redlock is controversial: [Martin Kleppmann's critique of Redlock](https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html) vs [Antirez's response](http://antirez.com/news/101). The fencing token is the correct fix regardless of which lock algorithm you choose.
 
 ### API
 - [ ] `GET /analytics/workspace/:id/summary` — WAU, MAU, page count, block count
@@ -398,6 +437,15 @@ All properties are stored as a typed schema on the `database` block and as typed
 ### Stream Sampling (Reservoir Sampling)
 - [ ] `GET /analytics/workspace/:id/sample-events?n=100&type=:event_type` — return a uniformly random sample of N events from the full event log without loading all events into memory (**reservoir sampling** — single pass, O(N) space for the reservoir regardless of stream length)
 - [ ] Used by the analytics dashboard to render a representative scatter-plot of activity without fetching millions of raw events
+
+### SIMD Batch Aggregation
+- [ ] The hourly ETL **Transform** step sums daily event counts across potentially millions of rows — write the scalar loop first, then replace the inner sum with `std::simd::u64x4` to process 4 counts per instruction
+- [ ] **Auto-vectorisation check:** Compile with `RUSTFLAGS="-C target-cpu=native" cargo build --release`, then inspect with `cargo-asm` or `objdump` — verify LLVM emitted `vpaddd` / `vpaddq` AVX2 instructions; if not, understand what broke the vectoriser (aliasing, non-contiguous memory, etc.)
+- [ ] **Software prefetch:** The prefix sum scan is sequential — add `std::arch::x86_64::_mm_prefetch` to fetch the next cache line one iteration ahead and measure throughput improvement with `criterion`
+- [ ] **Seqlock for live counters:** Real-time workspace counters (active users, live edits/min) are read on every dashboard refresh and written by event ingestion — implement a **seqlock** (`AtomicU64` sequence + data + `AtomicU64` sequence) for zero-lock reads; readers retry only if a write races, which is rare
+- [ ] **`rayon` parallel prefix sum:** For the largest workspaces, parallelise the Transform step with `rayon::iter` — understand why a naive parallel prefix sum requires a two-pass approach (parallel reduce → parallel scan) and implement both
+
+**Low-level lesson:** Measure before optimising. Use `criterion` for microbenchmarks and `cargo-flamegraph` or `perf` for production profiles. SIMD is the last resort, not the first tool. Read: [The Rust Performance Book](https://nnethercote.github.io/perf-book/).
 
 ---
 
@@ -441,7 +489,7 @@ All properties are stored as a typed schema on the `database` block and as typed
 
 ## Phase 12 — Backlinks & Bidirectional References
 
-> **Rust concepts:** Graph algorithms on `SurrealDB` record links, `HashSet` dedup
+> **Rust concepts:** Graph algorithms on `block_references` adjacency table, `HashSet` dedup
 > **System design:** Reverse index, eventual consistency of backlink graph
 > **DSA:** Graph traversal (BFS/DFS), bidirectional adjacency list
 
@@ -465,6 +513,14 @@ All properties are stored as a typed schema on the `database` block and as typed
 
 **Distributed Systems lesson:** Backlink index is eventually consistent — explore read-your-writes consistency trade-offs.
 
+### Anti-Entropy & Reconciliation
+- [ ] If a NATS partition causes `document-service` to miss a `BacklinkCreated` event, the `references` graph edge is never written — the backlink index diverges from reality
+- [ ] **Anti-entropy job:** a background worker (runs nightly) performs a full reconciliation: scan all `block` records for `[[page]]` references in `content.spans`, compare against the `block_references` adjacency table in PostgreSQL, insert any missing edges and delete any stale ones
+- [ ] This is the **read-repair / anti-entropy** pattern: you cannot guarantee all events are delivered and processed exactly once, so a reconciliation pass periodically re-derives truth from the authoritative source
+- [ ] `POST /admin/backlinks/reconcile` — trigger a manual reconciliation (Admin only); returns a diff: `{ added: N, removed: M, unchanged: K }`
+
+**Distributed Systems lesson:** Anti-entropy is how Cassandra, DynamoDB, and Riak guarantee eventual consistency in the face of dropped messages. The repair scan IS the eventual in "eventually consistent". Read: [DDIA Chapter 5 — Anti-entropy and read repair](https://dataintensive.net/).
+
 ---
 
 ## Phase 12.5 — Database Relations & Rollups
@@ -482,7 +538,7 @@ database_row:A:1  --[relation_property]--> database_row:B:5
 database_row:A:1  --[relation_property]--> database_row:B:9
 ```
 
-SurrealDB models this naturally as a graph edge: `RELATE database_row:A:1->relation_prop_name->database_row:B:5`. The inverse direction (B shows "linked from A") is a `RELATE` in reverse or a `<-` traversal query.
+PostgreSQL models this as an explicit join table: `INSERT INTO docs.block_references (from_block_id, to_page_id) VALUES ($1, $2)`. The inverse direction (B shows "linked from A") is a `SELECT from_block_id FROM docs.block_references WHERE to_page_id = $1` query.
 
 ### Relation API
 - [ ] `POST /databases/:id/schema/properties` — add a `relation` property; body includes `target_database_id` and `sync_direction` (`one_way` | `bidirectional`)
@@ -597,6 +653,8 @@ Each view is a different *projection* of the same underlying database block rows
 
 **DSA lesson:** Exponential backoff with full jitter — calculate the math, implement it without floating point drift.
 
+**Distributed Systems lesson:** The **two-generals problem** proves that exactly-once delivery is impossible over an unreliable channel — you can never be certain the acknowledgement was received. The practical consequence: at-least-once delivery + idempotent receivers is the only achievable guarantee. Every system that claims "exactly-once" is actually "at-least-once + dedup on the receiver side". Read: [DDIA Chapter 8 — The Trouble with Distributed Systems (Two Generals)](https://dataintensive.net/).
+
 ---
 
 ## Phase 17 — Audit Log Service
@@ -606,7 +664,7 @@ Each view is a different *projection* of the same underlying database block rows
 > **Distributed Systems:** Append-only log as the source of truth (Kafka/NATS as event backbone)
 
 - [ ] All mutating actions across all services emit an `AuditEvent` to NATS
-- [ ] Audit service persists events to append-only SurrealDB table (no UPDATE/DELETE)
+- [ ] Audit service persists events to append-only PostgreSQL `audit.events` table (no UPDATE/DELETE)
 - [ ] `GET /audit/workspaces/:id` — paginated audit log for a workspace (Admin only)
 - [ ] Filter by user, event type, date range
 - [ ] GDPR: anonymize user references in audit log on account deletion (pseudonymisation, not deletion)
@@ -620,7 +678,7 @@ Each view is a different *projection* of the same underlying database block rows
 
 > **Rust concepts:** Consistent hashing with `HashRing`, `Arc<AtomicUsize>` for metrics, unsafe ring buffer
 > **System design:** Consistent hashing, stateful service scaling, session affinity
-> **Distributed Systems:** Leader election, sticky sessions, distributed coordination
+> **Distributed Systems:** Leader election, failure detectors, gossip (conceptual), Chandy-Lamport snapshots, distributed coordination
 
 - [ ] API gateway routes WebSocket connections using consistent hashing on `page_id`
 - [ ] All connections for the same page land on the same collaboration-service instance
@@ -628,7 +686,31 @@ Each view is a different *projection* of the same underlying database block rows
 - [ ] On instance failure, sessions rehash to surviving instances (minimal disruption)
 - [ ] `GET /admin/collaboration/sessions` — cluster-wide session distribution stats
 
+### Failure Detector
+- [ ] Each `collaboration-service` instance writes a heartbeat key `collab:heartbeat:{instance_id}` to Redis with a 5s TTL, refreshed every 2s
+- [ ] API gateway polls the key set on every routing decision — a missing key = dead instance, removed from the hash ring
+- [ ] **φ Accrual Failure Detector** (conceptual): understand how Akka and Cassandra replace binary alive/dead with a suspicion score based on heartbeat inter-arrival time — this is strictly better than TTL for flaky instances
+
+### Leader Election (ETL Scheduler Guard)
+- [ ] Only one `collaboration-service` instance should act as the cross-instance presence aggregator; others are standby
+- [ ] Implement with **Redis SETNX + TTL** (a lock key with a unique `instance_id` value): the holder is leader; others poll until the key expires
+- [ ] On acquiring leadership, leader writes a fencing token (monotonically increasing integer via Redis `INCR`) — all writes from the leader include this token; stale leaders with an old token are rejected
+- [ ] **Fencing token lesson:** prevents a paused/GC'd leader from writing stale data after a new leader has been elected
+
+### Gossip Protocol (Conceptual + NATS Deep-Dive)
+- [ ] Before scaling NATS JetStream to a multi-node cluster: read how NATS uses a **Raft-based gossip** to propagate stream metadata and membership — run a 3-node NATS cluster locally and observe leader election via `nats server report`
+- [ ] Understand what a **gossip protocol** does: each node periodically picks a random peer and exchanges its view of cluster state; convergence in O(log N) rounds — contrast with centralised coordination
+- [ ] Resources: [NATS JetStream clustering docs](https://docs.nats.io/running-a-nats-service/configuration/clustering/jetstream_clustering), [Gossip and Epidemic Broadcast — DDIA Ch. 5](https://dataintensive.net/)
+
+### Chandy-Lamport Distributed Snapshot
+- [ ] `POST /admin/collaboration/snapshot` — triggers a Chandy-Lamport consistent global snapshot across all collaboration-service instances
+- [ ] Each instance: (1) records its local state (active sessions, CRDT state), (2) sends a marker message on all NATS channels, (3) records all messages received after the marker from each channel
+- [ ] The snapshot coordinator collects partial states and assembles a globally consistent view — useful for debugging split-brain and for crash recovery
+- [ ] **Distributed Systems lesson:** why you cannot simply pause all instances to take a snapshot in a running system — Chandy-Lamport does it without stopping message delivery
+
 **DSA lesson:** Consistent hashing ring — implement the ring, understand why it minimises rehashing on node changes.
+
+**Distributed Systems lesson:** The progression from TTL heartbeats → φ accrual → Raft-based membership mirrors how production systems evolved (Redis Sentinel → Raft-based etcd/Consul). Read: [DDIA Chapter 8 — The Trouble with Distributed Systems](https://dataintensive.net/).
 
 ---
 
@@ -819,7 +901,7 @@ Source string (UTF-8)
   ┌──────┴──────────────────────────────────────────┐
   │                                                  │
   ▼                      ▼              ▼            ▼
-Interpreter          SurrealQL        WASM        Search
+Interpreter          SQL              WASM        Search
 (formula eval)       Transpiler      Evaluator    Query
                   (filter → WHERE)  (client-side  Parser
                                     formula eval)
@@ -836,6 +918,11 @@ Interpreter          SurrealQL        WASM        Search
 - [ ] `Lexer` implements `Iterator<Item = Result<Token, LexError>>`
 
 **DSA lesson:** The lexer is a **finite automaton** — each character advances a state. Hand-roll it before reaching for `logos` (the Rust lexer generator) so you understand what the generated code does. Read: [Crafting Interpreters — Scanning](https://craftinginterpreters.com/scanning.html).
+
+**Low-level optimisation (after correctness):** The scalar lexer processes one byte per iteration. Once it passes all tests, profile it on a 10,000-character BEL expression:
+- Replace the initial "find next special character" scan with `memchr::memchr2(b'(', b'"', src)` — this uses SIMD internally and is 10–20× faster than a scalar loop for sparse token sources
+- For the identifier scanner (longest common hot path), use `std::simd::u8x16` to test 16 bytes against the ASCII alphanumeric mask in one instruction
+- Check `logos` output via `cargo-asm` to see the SIMD `logos` generates — compare to your hand-rolled version
 
 ### Phase 25.2 — `libs/bel` Crate: Parser & AST
 
@@ -869,16 +956,16 @@ Interpreter          SurrealQL        WASM        Search
 - [ ] `if(cond, then, else)` requires `cond: Boolean`, `then` and `else` must unify to the same type
 - [ ] Functions are typed via a built-in function registry: `today() → Date`, `concat(...Text) → Text`, `floor(Number) → Number`, `dateAdd(Date, Number, Text) → Date`
 
-### Phase 25.4 — Filter Backend: SurrealQL Transpiler
+### Phase 25.4 — Filter Backend: SQL Transpiler
 
 > **DSA:** AST-to-target compilation — tree transformation via pattern matching
 
-- [ ] `FilterTranspiler::transpile(expr: &TypedExpr, schema: &PropertySchema) -> Result<String, TranspileError>` — walks the typed AST and emits a SurrealQL `WHERE` clause fragment
-- [ ] `BinOp(And)` → `(...) AND (...)`, `BinOp(Eq)` → `property_values.<prop_id> = $val`
-- [ ] `In` → `property_values.<prop_id> IN [...]`
-- [ ] Date comparisons emit SurrealQL `time::` functions: `today()` → `time::floor(time::now(), 1d)`
+- [ ] `FilterTranspiler::transpile(expr: &TypedExpr, schema: &PropertySchema) -> Result<String, TranspileError>` — walks the typed AST and emits a SQL `WHERE` clause fragment
+- [ ] `BinOp(And)` → `(...) AND (...)`, `BinOp(Eq)` → `(content->'property_values'->>$prop_id) = $val`
+- [ ] `In` → `(content->'property_values'->>$prop_id) IN (...)`
+- [ ] Date comparisons use standard SQL date functions: `today()` → `CURRENT_DATE`
 - [ ] `@me` resolves to the current user's ID, injected as a bound parameter (never interpolated into the query string — **SQL injection prevention**)
-- [ ] Output is a parameterised query fragment: `(String, BTreeMap<String, Value>)` — the fragment + its bound parameters
+- [ ] Output is a parameterised query fragment: `(String, Vec<Value>)` — the fragment + its positional bound parameters
 
 **Security lesson:** The transpiler must never interpolate user values directly into the query string — always bind parameters. The type checker enforces that `@me` and string literals are values, never identifiable as SQL keywords.
 
@@ -945,7 +1032,7 @@ Interpreter          SurrealQL        WASM        Search
 
 | Feature | DSA Concept | Service | Phase |
 |---|---|---|---|
-| Backlink index | Bidirectional adjacency via SurrealDB edges | `document-service` | 12 |
+| Backlink index | Bidirectional adjacency via `block_references` join table | `document-service` | 12 |
 | "Pages reachable from X" explorer | Graph BFS/DFS with depth limit | `document-service` | 12 |
 | Circular reference detection | Cycle detection (DFS + colour marking) | `document-service` | 12 |
 | Knowledge cluster view | Strongly connected components (Tarjan's or Kosaraju's) | `document-service` | 12 |
@@ -1016,6 +1103,23 @@ Interpreter          SurrealQL        WASM        Search
 | Hot page + block L1 cache | LFU eviction (`moka`) — frequency-stable popular content | all services | 3+ |
 | Session + permission L1 cache | LRU eviction (`moka`) — recency-biased short-lived data | all services | 3+ |
 
+### Distributed Systems Protocols
+
+| Feature | Concept | Service | Phase |
+|---|---|---|---|
+| ETL job mutual exclusion | Leader election — Redis SETNX + fencing token | `analytics-service` | 9 |
+| Webhook delivery dedup | Distributed lock + fencing token | `webhook-service` | 16 |
+| Collaboration instance liveness | Heartbeat + failure detector (φ accrual conceptual) | `collaboration-service` | 18 |
+| Collaboration leader (presence aggregator) | Leader election — Redis SETNX + standby failover | `collaboration-service` | 18 |
+| NATS JetStream cluster | Gossip + Raft consensus (conceptual deep-dive) | NATS infra | 18 |
+| Global collaboration snapshot | Chandy-Lamport distributed snapshot | `collaboration-service` | 18 |
+| Backlink index repair | Anti-entropy reconciliation — nightly full reconcile pass | `document-service` | 12 |
+| Page permission writes | CAP — CP: reject write if quorum unavailable | `document-service` | 3 |
+| Backlink / search index updates | CAP — AP: serve stale reads over returning an error | `document-service` | 3, 12 |
+| PostgreSQL isolation levels | PACELC — latency vs consistency; `READ COMMITTED` vs `REPEATABLE READ` vs `SERIALIZABLE` | all services | 3 |
+| Crash recovery trust | WAL — understand what PostgreSQL guarantees after a crash | all services | 0, 3 |
+| Webhook / notification delivery | Two-generals — at-least-once is the ceiling; idempotency is the fix | `webhook-service` | 16 |
+
 ### Compiler / Language
 
 | Feature | DSA Concept | Service | Phase |
@@ -1024,7 +1128,7 @@ Interpreter          SurrealQL        WASM        Search
 | BEL filter parser | Recursive descent (statements) + Pratt parser (infix precedence climbing) | `libs/bel` | 25.2 |
 | BEL AST | Recursive enum + `Box<Expr>` — self-referential algebraic data type in Rust | `libs/bel` | 25.2 |
 | BEL type checker | Post-order AST traversal + type constraint propagation + unification | `libs/bel` | 25.3 |
-| SurrealQL transpiler | Tree transformation via structural pattern matching (AST → target IR) | `libs/bel` | 25.4 |
+| SQL transpiler | Tree transformation via structural pattern matching (AST → target IR) | `libs/bel` | 25.4 |
 | Formula interpreter | Tree-walking interpreter — recursive evaluation with short-circuit semantics | `libs/bel` | 25.5 |
 | WASM formula evaluator | `wasm32` feature gating — same crate compiles to server and browser | `libs/bel` | 25.6 |
 | BEL autocomplete | Trie over property/function names + cursor position tracking in the token stream | `bel-service` | 25.7 |
@@ -1056,3 +1160,49 @@ Interpreter          SurrealQL        WASM        Search
 | Unique daily visitors | HyperLogLog — implement from scratch first | `analytics-service` | 21 |
 | "Has user seen page?" | Bloom filter — implement, understand false positive rate | `analytics-service` | 21 |
 | Top-K pages (space-efficient) | Count-Min Sketch | `analytics-service` | 21 |
+
+### Lock-Free & Concurrent Data Structures
+
+| Feature | Concept | Service | Phase |
+|---|---|---|---|
+| CRDT op sequence number | `AtomicU64::fetch_add` with `Relaxed` ordering | `collaboration-service` | 4 |
+| Session registry | `DashMap` vs `RwLock<HashMap>` — benchmark under contention | `collaboration-service` | 4, 18 |
+| Op fanout queue | `crossbeam::queue::SegQueue` — lock-free MPMC | `collaboration-service` | 4 |
+| Bounded op batch buffer | `crossbeam::queue::ArrayQueue` — bounded SPSC/MPMC ring | `collaboration-service` | 4 |
+| CRDT node deallocation | `crossbeam-epoch` — epoch-based reclamation, ABA problem | `collaboration-service` | 4 |
+| Undo/redo stack | Treiber stack — lock-free stack via CAS | `collaboration-service` | 22 |
+| Token bucket counter | CAS loop with `AcqRel` ordering + false sharing prevention | `api-gateway` | 8 |
+| Live analytics counters | Seqlock — sequence + data + sequence; zero-lock reads | `analytics-service` | 9 |
+
+### SIMD & Vectorisation
+
+| Feature | Concept | Service | Phase |
+|---|---|---|---|
+| ETL event count aggregation | `std::simd::u64x4` — 4 counts per instruction | `analytics-service` | 9 |
+| Prefix sum scan | Auto-vectorisation check + software prefetch | `analytics-service` | 9 |
+| In-page KMP first-char scan | `memchr` crate — SIMD byte search | `document-service` | 3 |
+| BEL lexer special-char scan | `memchr::memchr2` — SIMD scan for `(`, `"` etc. | `libs/bel` | 25.1 |
+| BEL lexer identifier scan | `std::simd::u8x16` — 16-byte alphanumeric mask check | `libs/bel` | 25.1 |
+| WASM formula evaluation | `std::simd` → WASM SIMD128 on `wasm32` target | `libs/bel` | 25.6 |
+
+### Cache-Conscious Design
+
+| Feature | Concept | Service | Phase |
+|---|---|---|---|
+| Block tree traversal | SoA vs AoS benchmark — `criterion` + cache miss measurement | `document-service` | 3 |
+| Page load arena | `bumpalo::Bump` — eliminate per-block heap allocation | `document-service` | 3 |
+| Page cache metadata | `#[repr(align(64))]` — false sharing prevention | `document-service` | 3 |
+| Rate limit counters | `#[repr(align(64))]` per-user padding | `api-gateway` | 8 |
+| Prefix sum array scan | `_mm_prefetch` — hide memory latency | `analytics-service` | 9 |
+| Per-connection state | Cache line padding between connection structs | `collaboration-service` | 4, 18 |
+
+### Memory Allocators
+
+| Feature | Concept | Service | Phase |
+|---|---|---|---|
+| CRDT op log | `typed-arena::Arena<Op>` — O(1) alloc, batch free | `collaboration-service` | 4 |
+| Block tree construction | `bumpalo` bump allocator | `document-service` | 3 |
+| WebSocket connections | Slab allocator — fixed-size slots, no fragmentation | `collaboration-service` | 4, 18 |
+| NATS message buffers | Pool allocator — reuse `Bytes` buffers | `notification-service` | 7 |
+| CRDT rope nodes | `MaybeUninit<T>` — defer initialisation | `collaboration-service` | 4 |
+| Lock-free node ownership | `ManuallyDrop<T>` — prevent premature drop | `collaboration-service` | 4, 22 |

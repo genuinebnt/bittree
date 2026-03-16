@@ -30,7 +30,7 @@ graph TD
     end
 
     subgraph Infra["Infrastructure (Local: Docker Compose / Cloud: AWS)"]
-        SURREAL[("SurrealDB\nauth · users · docs\nstorage · notifications\nanalytics · audit")]
+        PG[("PostgreSQL 16\nauth · users · docs\nstorage · notifications\nanalytics · audit")]
         REDIS[("Redis\nSessions · Blocklist\nPresence · Rate limits\nRecents · Dedup")]
         NATS[/"NATS JetStream\nEvent bus"/]
         MINIO[("MinIO / S3\nObject storage")]
@@ -58,32 +58,32 @@ graph TD
     GW -- "HTTP" --> AUDIT
     GW -- "HTTP" --> TEMPLATE
 
-    AUTH      --> SURREAL
+    AUTH      --> PG
     AUTH      --> REDIS
-    USER      --> SURREAL
+    USER      --> PG
     USER      --> REDIS
     USER      --> NATS
-    DOC       --> SURREAL
+    DOC       --> PG
     DOC       --> REDIS
     DOC       --> NATS
-    COLLAB    --> SURREAL
+    COLLAB    --> PG
     COLLAB    --> REDIS
     COLLAB    --> NATS
     SEARCH    --> TANTIVY
     SEARCH    --> NATS
-    STORAGE   --> SURREAL
+    STORAGE   --> PG
     STORAGE   --> MINIO
     STORAGE   --> NATS
-    NOTIF     --> SURREAL
+    NOTIF     --> PG
     NOTIF     --> REDIS
     NOTIF     --> NATS
-    ANALYTICS --> SURREAL
+    ANALYTICS --> PG
     ANALYTICS --> NATS
-    WEBHOOK   --> SURREAL
+    WEBHOOK   --> PG
     WEBHOOK   --> NATS
-    AUDIT     --> SURREAL
+    AUDIT     --> PG
     AUDIT     --> NATS
-    TEMPLATE  --> SURREAL
+    TEMPLATE  --> PG
     TEMPLATE  --> NATS
 
     AUTH      -. "OTLP traces" .-> JAEGER
@@ -161,7 +161,7 @@ sequenceDiagram
     participant GW as api-gateway
     participant AUTH as auth-service
     participant DOC as document-service
-    participant DB as SurrealDB (docs)
+    participant DB as PostgreSQL (docs)
     participant NATS as NATS JetStream
 
     C->>GW: GET /pages/:id  (Authorization: Bearer <jwt>)
@@ -170,7 +170,7 @@ sequenceDiagram
     GW->>DOC: GET /pages/:id  (X-User-Id, X-Workspace-Id injected)
     DOC->>DB: SELECT page + permission check
     DB-->>DOC: page record
-    DOC->>DB: SELECT ->contains->(block ...) ORDER BY sort_key
+    DOC->>DB: SELECT * FROM blocks WHERE page_id = $1 AND deleted_at IS NULL ORDER BY sort_key
     DB-->>DOC: block tree
     DOC-->>GW: 200 PageResponse
     GW-->>C: 200 PageResponse
@@ -186,7 +186,7 @@ sequenceDiagram
     participant C2 as Client B
     participant GW as api-gateway
     participant COLLAB as collaboration-service
-    participant DB as SurrealDB (LIVE SELECT)
+    participant DB as PostgreSQL (docs)
     participant REDIS as Redis (presence)
     participant NATS as NATS (cross-instance)
 
@@ -194,11 +194,11 @@ sequenceDiagram
     GW->>GW: Consistent hash(page_id) → collab instance 2
     GW->>COLLAB: Proxy WebSocket
     COLLAB->>REDIS: Register session (user, page, instance)
-    COLLAB->>DB: LIVE SELECT * FROM block WHERE page = page:id
+    COLLAB->>DB: LISTEN block_updates_{page_id}
 
     C1->>COLLAB: Op { insert "hello" at pos 5 }
     COLLAB->>COLLAB: Apply CRDT op, update authoritative state
-    COLLAB->>DB: UPDATE block:uuid SET content = ...
+    COLLAB->>DB: UPDATE docs.blocks SET content = $1 WHERE id = $2 AND version = $3
     COLLAB->>NATS: Publish docs.block_updated
     NATS-->>COLLAB: Fan-out to other instances (if C2 on different instance)
     COLLAB-->>C2: Broadcast Op to all connections on this page
@@ -220,7 +220,7 @@ sequenceDiagram
 │  - Use cases / service structs               │
 ├─────────────────────────────────────────────┤
 │  Infrastructure (implements domain traits)   │  ← Swappable
-│  - SurrealPageRepo  (impl PageRepo)          │
+│  - PostgresPageRepo (impl PageRepo)          │
 │  - RedisCache       (impl CacheStore)        │
 │  - NatsPublisher    (impl EventPublisher)    │
 │  - MinioStore       (impl ObjectStore)       │
@@ -229,7 +229,7 @@ sequenceDiagram
          Domain never imports Infrastructure
 ```
 
-**Dependency rule:** Infrastructure depends on Domain. Domain depends on nothing outside `std` and `libs/shared`. This is what makes swapping SurrealDB → PostgreSQL (or Redis → DragonflyDB) a single-layer change.
+**Dependency rule:** Infrastructure depends on Domain. Domain depends on nothing outside `std` and `libs/shared`. This is what makes swapping PostgreSQL (or Redis → DragonflyDB) a single-layer change.
 
 ---
 
@@ -237,7 +237,7 @@ sequenceDiagram
 
 | Container | Image | Port | Used by |
 |---|---|---|---|
-| `surrealdb` | `surrealdb/surrealdb:latest` | 8080 | all services |
+| `postgres` | `postgres:16-alpine` | 5432 | all services |
 | `redis` | `redis:7-alpine` | 6379 | auth, user, doc, collab, notif |
 | `nats` | `nats:2-alpine` (JetStream) | 4222 | all services |
 | `minio` | `minio/minio` | 9000 / 9001 (console) | storage |
@@ -273,7 +273,7 @@ Internet
 │                              │                           │
 │         ┌────────────────────▼──────────────────┐       │
 │         │           Managed Services              │       │
-│         │  SurrealDB Cloud (or ECS self-hosted)  │       │
+│         │  RDS PostgreSQL                        │       │
 │         │  ElastiCache (Redis)                   │       │
 │         │  Amazon MQ / managed NATS              │       │
 │         │  S3 (object storage)                   │       │

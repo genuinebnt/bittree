@@ -1,40 +1,40 @@
-# BitTree — Data Model (SurrealDB)
+# BitTree — Data Model (PostgreSQL)
 
-> **Database:** SurrealDB 2.x (multi-model: document + graph + relational)
-> **Query Language:** SurrealQL
-> **Rust SDK:** `surrealdb` crate
+> **Database:** PostgreSQL 16
+> **Query style:** `sqlx` with compile-time checked queries
+> **Schema layout:** one Postgres instance; one schema per service
 
 ---
 
-## Namespace / Database Layout
+## Schema Layout
 
 ```
-Namespace: bittree
-├── Database: auth          (auth-service)
-├── Database: users         (user-service)
-├── Database: docs          (document-service, collaboration-service, template-service)
-├── Database: storage       (storage-service)
-├── Database: notifications (notification-service)
-├── Database: analytics     (analytics-service)
-└── Database: audit         (audit-service)
+PostgreSQL instance: bittree
+├── Schema: auth          (auth-service)
+├── Schema: users         (user-service)
+├── Schema: docs          (document-service, collaboration-service, template-service)
+├── Schema: storage       (storage-service)
+├── Schema: notifications (notification-service)
+├── Schema: analytics     (analytics-service)
+└── Schema: audit         (audit-service)
 ```
 
-Collaboration-service uses SurrealDB `LIVE SELECT` on the `docs` database plus Redis for ephemeral presence state. Search-service maintains a Tantivy index fed by SurrealDB change events.
+Cross-service references (e.g. `docs.blocks` referencing a user) store the UUID as a plain column — no cross-schema FK constraint. The application layer resolves the reference.
 
 ---
 
 ## Entity Relationship Diagram
 
-> Solid lines = stored relationship (record link or graph edge).
-> Dashed lines = cross-database reference (not DB-enforced; resolved at application layer).
-> `[EDGE]` = SurrealDB graph edge (`RELATE a->edge->b`); attributes live on the edge record.
+> Solid lines = stored relationship (FK or adjacency list `parent_id`).
+> Dashed lines = cross-schema reference (not DB-enforced; resolved at application layer).
 
 ```mermaid
 erDiagram
 
-    %% ── auth database ──────────────────────────────────────────
+    %% ── auth schema ──────────────────────────────────────────
     CREDENTIAL {
-        record   user_id
+        uuid     id
+        uuid     user_id
         string   provider
         string   provider_user_id
         string   password_hash
@@ -42,16 +42,18 @@ erDiagram
     }
 
     REFRESH_TOKEN {
-        record   user_id
-        string   family_id
+        uuid     id
+        uuid     user_id
+        uuid     family_id
         string   token_hash
         bool     revoked
         datetime expires_at
         datetime created_at
     }
 
-    %% ── users database ──────────────────────────────────────────
+    %% ── users schema ──────────────────────────────────────────
     USER {
+        uuid     id
         string   email
         string   display_name
         string   avatar_url
@@ -62,6 +64,7 @@ erDiagram
     }
 
     WORKSPACE {
+        uuid     id
         string   slug
         string   name
         string   icon
@@ -71,14 +74,17 @@ erDiagram
         datetime deleted_at
     }
 
-    MEMBER_OF_EDGE {
+    WORKSPACE_MEMBER {
+        uuid     workspace_id
+        uuid     user_id
         string   role
         datetime joined_at
     }
 
     WORKSPACE_INVITE {
-        record   workspace_id
-        record   invited_by
+        uuid     id
+        uuid     workspace_id
+        uuid     invited_by
         string   email
         string   token_hash
         string   role
@@ -87,37 +93,45 @@ erDiagram
         datetime created_at
     }
 
-    USER_FAVORITE_EDGE {
+    USER_FAVORITE {
+        uuid     user_id
+        uuid     page_id
         datetime created_at
     }
 
-    %% ── docs database ───────────────────────────────────────────
+    %% ── docs schema ───────────────────────────────────────────
     PAGE {
-        record   workspace_id
-        record   created_by
-        record   last_edited_by
+        uuid     id
+        uuid     workspace_id
+        uuid     parent_id
+        ltree    path
+        uuid     created_by
+        uuid     last_edited_by
         string   title
         string   icon
         string   cover_url
         bool     is_database
         string   visibility
         bool     locked
+        uuid     locked_by
         int      version
+        string   published_slug
         datetime created_at
         datetime updated_at
         datetime deleted_at
     }
 
     PAGE_PERMISSION {
-        record   page_id
-        record   user_id
+        uuid     page_id
+        uuid     user_id
         string   role
-        record   granted_by
+        uuid     granted_by
         datetime granted_at
     }
 
     PAGE_GUEST {
-        record   page_id
+        uuid     id
+        uuid     page_id
         string   email
         string   token_hash
         bool     revoked
@@ -126,84 +140,93 @@ erDiagram
     }
 
     BLOCK {
-        record   page_id
-        record   created_by
-        record   last_edited_by
+        uuid     id
+        uuid     page_id
+        uuid     parent_id
+        uuid     created_by
+        uuid     last_edited_by
         string   block_type
-        object   content
-        object   properties
+        jsonb    content
+        jsonb    properties
+        string   sort_key
+        uuid     source_block_id
         int      version
         datetime created_at
         datetime updated_at
         datetime deleted_at
     }
 
-    CHILD_PAGE_EDGE {
-        string   sort_key
-    }
-
-    CONTAINS_EDGE {
-        string   sort_key
-    }
-
-    CHILD_OF_EDGE {
-        string   sort_key
-    }
-
-    REFERENCES_EDGE {
-        datetime created_at
-    }
-
-    DB_RELATION_EDGE {
-        string   property_id
+    BLOCK_REFERENCE {
+        uuid     from_block_id
+        uuid     to_page_id
         datetime created_at
     }
 
     PAGE_SNAPSHOT {
-        record   page_id
-        record   created_by
-        object   snapshot
+        uuid     id
+        uuid     page_id
+        uuid     created_by
+        jsonb    snapshot
         datetime created_at
     }
 
-    %% ── storage database ────────────────────────────────────────
+    COMMENT {
+        uuid     id
+        uuid     block_id
+        uuid     author_id
+        uuid     parent_id
+        jsonb    spans
+        bool     resolved
+        uuid     resolved_by
+        datetime resolved_at
+        datetime created_at
+        datetime updated_at
+        datetime deleted_at
+    }
+
+    %% ── storage schema ────────────────────────────────────────
     FILE {
-        record   workspace_id
-        record   uploaded_by
+        uuid     id
+        uuid     workspace_id
+        uuid     uploaded_by
         string   storage_key
         string   original_name
         string   mime_type
-        int      size_bytes
+        bigint   size_bytes
         string   checksum
         datetime created_at
         datetime deleted_at
     }
 
-    %% ── notifications database ──────────────────────────────────
+    %% ── notifications schema ──────────────────────────────────
     NOTIFICATION {
-        record   user_id
+        uuid     id
+        uuid     user_id
         string   notification_type
-        object   payload
+        jsonb    payload
         bool     read
+        string   idempotency_key
         datetime created_at
         datetime read_at
     }
 
-    %% ── analytics database ──────────────────────────────────────
+    %% ── analytics schema ──────────────────────────────────────
     ANALYTICS_EVENT {
-        record   workspace_id
-        record   user_id
+        uuid     id
+        uuid     workspace_id
+        uuid     user_id
         string   event_type
-        object   properties
+        jsonb    properties
         datetime occurred_at
     }
 
-    %% ── audit database ──────────────────────────────────────────
+    %% ── audit schema ──────────────────────────────────────────
     AUDIT_EVENT {
-        record   workspace_id
-        record   actor_id
+        uuid     id
+        uuid     workspace_id
+        uuid     actor_id
         string   event_type
-        object   payload
+        jsonb    payload
         string   prev_hash
         datetime occurred_at
     }
@@ -213,30 +236,25 @@ erDiagram
     USER ||--o{ REFRESH_TOKEN      : "owns"
 
     %% ── users relationships ─────────────────────────────────────
-    USER         ||--o{ MEMBER_OF_EDGE    : "in"
-    WORKSPACE    ||--o{ MEMBER_OF_EDGE    : "has members"
+    USER         ||--o{ WORKSPACE_MEMBER  : "member of"
+    WORKSPACE    ||--o{ WORKSPACE_MEMBER  : "has members"
     USER         ||--o{ WORKSPACE_INVITE  : "sends"
     WORKSPACE    ||--o{ WORKSPACE_INVITE  : "receives"
-    USER         ||--o{ USER_FAVORITE_EDGE : "stars"
-    PAGE         ||--o{ USER_FAVORITE_EDGE : "starred by"
+    USER         ||--o{ USER_FAVORITE     : "stars"
+    PAGE         ||--o{ USER_FAVORITE     : "starred by"
 
     %% ── docs relationships ──────────────────────────────────────
     WORKSPACE    ||--o{ PAGE              : "owns"
-    PAGE         ||--o{ CHILD_PAGE_EDGE   : "parent of"
-    PAGE         ||--o{ CHILD_PAGE_EDGE   : "child of"
-    PAGE         ||--o{ CONTAINS_EDGE     : "contains"
-    BLOCK        ||--o{ CONTAINS_EDGE     : "contained in"
-    BLOCK        ||--o{ CHILD_OF_EDGE     : "parent block"
-    BLOCK        ||--o{ CHILD_OF_EDGE     : "child block"
-    BLOCK        ||--o{ REFERENCES_EDGE   : "references"
-    PAGE         ||--o{ REFERENCES_EDGE   : "referenced by"
-    BLOCK        ||--o{ DB_RELATION_EDGE  : "relates to"
+    PAGE         ||--o| PAGE              : "parent of (adjacency list)"
+    PAGE         ||--o{ BLOCK             : "contains"
+    BLOCK        ||--o| BLOCK             : "parent of (adjacency list)"
+    BLOCK        ||--o{ BLOCK_REFERENCE   : "references page"
     PAGE         ||--o{ PAGE_PERMISSION   : "has overrides"
-    USER         ||--o{ PAGE_PERMISSION   : "granted on"
     PAGE         ||--o{ PAGE_GUEST        : "guest access"
     PAGE         ||--o{ PAGE_SNAPSHOT     : "snapshots"
+    BLOCK        ||--o{ COMMENT           : "has comments"
 
-    %% ── cross-database (application-resolved) ───────────────────
+    %% ── cross-schema (application-resolved) ───────────────────
     USER         ||--o{ NOTIFICATION      : "receives"
     WORKSPACE    ||--o{ ANALYTICS_EVENT   : "generates"
     WORKSPACE    ||--o{ FILE              : "stores"
@@ -246,304 +264,372 @@ erDiagram
 
 ---
 
-## Entity Definitions
+## Schema Definitions
 
-### `auth` Database
+### `auth` Schema
 
-```surql
--- Users' authentication credentials
-DEFINE TABLE credential SCHEMAFULL;
-DEFINE FIELD user_id          ON credential TYPE record<user>;
-DEFINE FIELD provider         ON credential TYPE string
-    ASSERT $value IN ["local", "github", "google"];
-DEFINE FIELD provider_user_id ON credential TYPE option<string>;
-DEFINE FIELD password_hash    ON credential TYPE option<string>;
-DEFINE FIELD created_at       ON credential TYPE datetime DEFAULT time::now();
+```sql
+CREATE TABLE auth.credentials (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     UUID NOT NULL,  -- references users.users(id), no FK (cross-schema)
+    provider    VARCHAR NOT NULL CHECK (provider IN ('local', 'github', 'google')),
+    provider_user_id VARCHAR,
+    password_hash    VARCHAR,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
--- Refresh tokens (stored hashed, rotated on use)
-DEFINE TABLE refresh_token SCHEMAFULL;
-DEFINE FIELD user_id    ON refresh_token TYPE record<user>;
-DEFINE FIELD family_id  ON refresh_token TYPE string;
-DEFINE FIELD token_hash ON refresh_token TYPE string;
-DEFINE FIELD revoked    ON refresh_token TYPE bool DEFAULT false;
-DEFINE FIELD expires_at ON refresh_token TYPE datetime;
-DEFINE FIELD created_at ON refresh_token TYPE datetime DEFAULT time::now();
-DEFINE INDEX idx_token_hash ON refresh_token FIELDS token_hash UNIQUE;
+CREATE TABLE auth.refresh_tokens (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     UUID NOT NULL,
+    family_id   UUID NOT NULL,
+    token_hash  VARCHAR NOT NULL UNIQUE,
+    revoked     BOOLEAN NOT NULL DEFAULT FALSE,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX ON auth.refresh_tokens (token_hash);
 ```
 
-### `users` Database
+### `users` Schema
 
-```surql
-DEFINE TABLE user SCHEMAFULL;
-DEFINE FIELD email          ON user TYPE string ASSERT string::is::email($value);
-DEFINE FIELD display_name   ON user TYPE string;
-DEFINE FIELD avatar_url     ON user TYPE option<string>;
-DEFINE FIELD email_verified ON user TYPE bool DEFAULT false;
-DEFINE FIELD created_at     ON user TYPE datetime DEFAULT time::now();
-DEFINE FIELD updated_at     ON user TYPE datetime DEFAULT time::now();
-DEFINE FIELD deleted_at     ON user TYPE option<datetime>;
-DEFINE INDEX idx_email      ON user FIELDS email UNIQUE;
+```sql
+CREATE TABLE users.users (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email          VARCHAR NOT NULL UNIQUE,
+    display_name   VARCHAR NOT NULL,
+    avatar_url     VARCHAR,
+    email_verified BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at     TIMESTAMPTZ
+);
+CREATE INDEX ON users.users (email) WHERE deleted_at IS NULL;
 
-DEFINE TABLE workspace SCHEMAFULL;
-DEFINE FIELD slug       ON workspace TYPE string;
-DEFINE FIELD name       ON workspace TYPE string;
-DEFINE FIELD icon       ON workspace TYPE option<string>;
-DEFINE FIELD plan       ON workspace TYPE string DEFAULT "free"
-    ASSERT $value IN ["free", "pro", "team", "enterprise"];
-DEFINE FIELD created_at ON workspace TYPE datetime DEFAULT time::now();
-DEFINE FIELD updated_at ON workspace TYPE datetime DEFAULT time::now();
-DEFINE FIELD deleted_at ON workspace TYPE option<datetime>;
-DEFINE INDEX idx_slug   ON workspace FIELDS slug UNIQUE;
+CREATE TABLE users.workspaces (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    slug       VARCHAR NOT NULL UNIQUE,
+    name       VARCHAR NOT NULL,
+    icon       VARCHAR,
+    plan       VARCHAR NOT NULL DEFAULT 'free'
+                   CHECK (plan IN ('free', 'pro', 'team', 'enterprise')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at TIMESTAMPTZ
+);
 
--- Graph edge: user --member_of--> workspace
-DEFINE TABLE member_of SCHEMALESS;
-DEFINE FIELD role      ON member_of TYPE string
-    ASSERT $value IN ["owner", "admin", "editor", "commenter", "viewer"];
-DEFINE FIELD joined_at ON member_of TYPE datetime DEFAULT time::now();
--- RELATE user:uuid->member_of->workspace:uuid SET role = "editor";
--- SELECT ->member_of->workspace FROM user:uuid;
--- SELECT <-member_of<-user, member_of.role FROM workspace:uuid;
+-- Adjacency list: user membership in workspaces
+CREATE TABLE users.workspace_members (
+    workspace_id UUID NOT NULL REFERENCES users.workspaces(id),
+    user_id      UUID NOT NULL,  -- references users.users(id)
+    role         VARCHAR NOT NULL CHECK (role IN ('owner','admin','editor','commenter','viewer')),
+    joined_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (workspace_id, user_id)
+);
 
-DEFINE TABLE workspace_invite SCHEMAFULL;
-DEFINE FIELD workspace  ON workspace_invite TYPE record<workspace>;
-DEFINE FIELD invited_by ON workspace_invite TYPE record<user>;
-DEFINE FIELD email      ON workspace_invite TYPE string;
-DEFINE FIELD token_hash ON workspace_invite TYPE string;
-DEFINE FIELD role       ON workspace_invite TYPE string;
-DEFINE FIELD accepted   ON workspace_invite TYPE bool DEFAULT false;
-DEFINE FIELD expires_at ON workspace_invite TYPE datetime;
-DEFINE FIELD created_at ON workspace_invite TYPE datetime DEFAULT time::now();
-DEFINE INDEX idx_token  ON workspace_invite FIELDS token_hash UNIQUE;
+CREATE TABLE users.workspace_invites (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id UUID NOT NULL REFERENCES users.workspaces(id),
+    invited_by   UUID NOT NULL,
+    email        VARCHAR NOT NULL,
+    token_hash   VARCHAR NOT NULL UNIQUE,
+    role         VARCHAR NOT NULL,
+    accepted     BOOLEAN NOT NULL DEFAULT FALSE,
+    expires_at   TIMESTAMPTZ NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
--- Graph edge: user --favorites--> page  (cross-DB reference stored as string ID)
-DEFINE TABLE favorites SCHEMALESS;
-DEFINE FIELD created_at ON favorites TYPE datetime DEFAULT time::now();
--- RELATE user:uuid->favorites->page:uuid;
--- SELECT ->favorites->page FROM user:uuid;
+-- User favorites (adjacency list: user → page)
+CREATE TABLE users.user_favorites (
+    user_id    UUID NOT NULL,
+    page_id    UUID NOT NULL,  -- cross-schema ref, no FK
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, page_id)
+);
 ```
 
-### `docs` Database
+### `docs` Schema
 
-```surql
-DEFINE TABLE page SCHEMAFULL;
-DEFINE FIELD workspace      ON page TYPE record<workspace>;
-DEFINE FIELD created_by     ON page TYPE record<user>;
-DEFINE FIELD last_edited_by ON page TYPE record<user>;
-DEFINE FIELD title          ON page TYPE string;
-DEFINE FIELD icon           ON page TYPE option<string>;
-DEFINE FIELD cover_url      ON page TYPE option<string>;
-DEFINE FIELD is_database    ON page TYPE bool DEFAULT false;
-DEFINE FIELD visibility     ON page TYPE string DEFAULT "workspace"
-    ASSERT $value IN ["private", "workspace", "custom", "public"];
-DEFINE FIELD locked         ON page TYPE bool DEFAULT false;
-DEFINE FIELD locked_by      ON page TYPE option<record<user>>;
-DEFINE FIELD version        ON page TYPE int DEFAULT 0;
-DEFINE FIELD published_slug ON page TYPE option<string>;
-DEFINE FIELD created_at     ON page TYPE datetime DEFAULT time::now();
-DEFINE FIELD updated_at     ON page TYPE datetime DEFAULT time::now();
-DEFINE FIELD deleted_at     ON page TYPE option<datetime>;
-DEFINE INDEX idx_slug       ON page FIELDS published_slug UNIQUE;
+```sql
+CREATE EXTENSION IF NOT EXISTS ltree;
 
--- Graph edge: page --child_page--> page  (page hierarchy)
-DEFINE TABLE child_page SCHEMALESS;
-DEFINE FIELD sort_key ON child_page TYPE string;
+CREATE TABLE docs.pages (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id    UUID NOT NULL,              -- cross-schema ref
+    parent_id       UUID REFERENCES docs.pages(id),   -- adjacency list
+    path            LTREE,                      -- e.g. 'root.abc123.def456'
+    created_by      UUID NOT NULL,
+    last_edited_by  UUID NOT NULL,
+    title           VARCHAR NOT NULL,
+    icon            VARCHAR,
+    cover_url       VARCHAR,
+    is_database     BOOLEAN NOT NULL DEFAULT FALSE,
+    visibility      VARCHAR NOT NULL DEFAULT 'workspace'
+                        CHECK (visibility IN ('private','workspace','custom','public')),
+    locked          BOOLEAN NOT NULL DEFAULT FALSE,
+    locked_by       UUID,
+    version         INTEGER NOT NULL DEFAULT 0,
+    published_slug  VARCHAR UNIQUE,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at      TIMESTAMPTZ
+);
+CREATE INDEX ON docs.pages USING GIST (path);
+CREATE INDEX ON docs.pages (workspace_id, deleted_at);
 
--- Per-page permission overrides (only present when visibility = "custom")
-DEFINE TABLE page_permission SCHEMAFULL;
-DEFINE FIELD page       ON page_permission TYPE record<page>;
-DEFINE FIELD user_id    ON page_permission TYPE record<user>;
-DEFINE FIELD role       ON page_permission TYPE string
-    ASSERT $value IN ["editor", "commenter", "viewer"];
-DEFINE FIELD granted_by ON page_permission TYPE record<user>;
-DEFINE FIELD granted_at ON page_permission TYPE datetime DEFAULT time::now();
-DEFINE INDEX idx_page_user ON page_permission FIELDS page, user_id UNIQUE;
+CREATE TABLE docs.page_permissions (
+    page_id    UUID NOT NULL REFERENCES docs.pages(id),
+    user_id    UUID NOT NULL,
+    role       VARCHAR NOT NULL CHECK (role IN ('editor','commenter','viewer')),
+    granted_by UUID NOT NULL,
+    granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (page_id, user_id)
+);
 
--- Guest access tokens (external users, no workspace membership)
-DEFINE TABLE page_guest SCHEMAFULL;
-DEFINE FIELD page       ON page_guest TYPE record<page>;
-DEFINE FIELD email      ON page_guest TYPE string;
-DEFINE FIELD token_hash ON page_guest TYPE string;
-DEFINE FIELD revoked    ON page_guest TYPE bool DEFAULT false;
-DEFINE FIELD expires_at ON page_guest TYPE datetime;
-DEFINE FIELD created_at ON page_guest TYPE datetime DEFAULT time::now();
-DEFINE INDEX idx_guest_token ON page_guest FIELDS token_hash UNIQUE;
+CREATE TABLE docs.page_guests (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    page_id    UUID NOT NULL REFERENCES docs.pages(id),
+    email      VARCHAR NOT NULL,
+    token_hash VARCHAR NOT NULL UNIQUE,
+    revoked    BOOLEAN NOT NULL DEFAULT FALSE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
-DEFINE TABLE block SCHEMAFULL;
-DEFINE FIELD page           ON block TYPE record<page>;
-DEFINE FIELD created_by     ON block TYPE record<user>;
-DEFINE FIELD last_edited_by ON block TYPE record<user>;
-DEFINE FIELD block_type     ON block TYPE string;
-DEFINE FIELD content        ON block TYPE object;
-DEFINE FIELD properties     ON block TYPE object DEFAULT {};
-DEFINE FIELD source_block   ON block TYPE option<record<block>>;  -- synced_block canonical ref
-DEFINE FIELD version        ON block TYPE int DEFAULT 0;
-DEFINE FIELD created_at     ON block TYPE datetime DEFAULT time::now();
-DEFINE FIELD updated_at     ON block TYPE datetime DEFAULT time::now();
-DEFINE FIELD deleted_at     ON block TYPE option<datetime>;
+CREATE TABLE docs.blocks (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    page_id        UUID NOT NULL REFERENCES docs.pages(id),
+    parent_id      UUID REFERENCES docs.blocks(id),   -- adjacency list: NULL = direct page child
+    created_by     UUID NOT NULL,
+    last_edited_by UUID NOT NULL,
+    block_type     VARCHAR NOT NULL,
+    content        JSONB NOT NULL DEFAULT '{}',
+    properties     JSONB NOT NULL DEFAULT '{}',
+    sort_key       VARCHAR NOT NULL,
+    source_block_id UUID REFERENCES docs.blocks(id),  -- synced_block canonical ref
+    version        INTEGER NOT NULL DEFAULT 0,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at     TIMESTAMPTZ
+);
+CREATE INDEX ON docs.blocks (page_id, sort_key) WHERE deleted_at IS NULL;
+CREATE INDEX ON docs.blocks (parent_id) WHERE deleted_at IS NULL;
 
--- Graph edge: page --contains--> block  (direct page children)
-DEFINE TABLE contains SCHEMALESS;
-DEFINE FIELD sort_key ON contains TYPE string;
+-- Adjacency list: backlinks (block references a page)
+CREATE TABLE docs.block_references (
+    from_block_id UUID NOT NULL REFERENCES docs.blocks(id) ON DELETE CASCADE,
+    to_page_id    UUID NOT NULL,  -- cross-schema ref
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (from_block_id, to_page_id)
+);
+CREATE INDEX ON docs.block_references (to_page_id);
 
--- Graph edge: block --child_of--> block  (nested blocks)
-DEFINE TABLE child_of SCHEMALESS;
-DEFINE FIELD sort_key ON child_of TYPE string;
+CREATE TABLE docs.page_snapshots (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    page_id    UUID NOT NULL REFERENCES docs.pages(id),
+    created_by UUID NOT NULL,
+    snapshot   JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX ON docs.page_snapshots (page_id, created_at);
 
--- Graph edge: block --references--> page  (backlinks — [[PageTitle]] syntax)
-DEFINE TABLE references SCHEMALESS;
-DEFINE FIELD created_at ON references TYPE datetime DEFAULT time::now();
--- RELATE block:uuid->references->page:uuid;
--- SELECT <-references<-block.page FROM page:uuid;  -- all pages that link here
-
--- Graph edge: database_row --db_relation--> database_row  (Phase 12.5 relation property)
-DEFINE TABLE db_relation SCHEMALESS;
-DEFINE FIELD property_id ON db_relation TYPE string;  -- which relation property on the source row
-DEFINE FIELD created_at  ON db_relation TYPE datetime DEFAULT time::now();
--- RELATE block:row_a->db_relation->block:row_b SET property_id = "prop:uuid";
--- SELECT ->db_relation->(block WHERE deleted_at = NONE) FROM block:row_a WHERE db_relation.property_id = "prop:uuid";
-
--- Page snapshots for version history
-DEFINE TABLE page_snapshot SCHEMAFULL;
-DEFINE FIELD page       ON page_snapshot TYPE record<page>;
-DEFINE FIELD created_by ON page_snapshot TYPE record<user>;
-DEFINE FIELD snapshot   ON page_snapshot TYPE object;
-DEFINE FIELD created_at ON page_snapshot TYPE datetime DEFAULT time::now();
-
--- Block-level comments
-DEFINE TABLE comment SCHEMAFULL;
-DEFINE FIELD block      ON comment TYPE record<block>;
-DEFINE FIELD author     ON comment TYPE record<user>;
-DEFINE FIELD parent     ON comment TYPE option<record<comment>>;
-DEFINE FIELD spans      ON comment TYPE array;
-DEFINE FIELD resolved   ON comment TYPE bool DEFAULT false;
-DEFINE FIELD resolved_by ON comment TYPE option<record<user>>;
-DEFINE FIELD resolved_at ON comment TYPE option<datetime>;
-DEFINE FIELD created_at ON comment TYPE datetime DEFAULT time::now();
-DEFINE FIELD updated_at ON comment TYPE datetime DEFAULT time::now();
-DEFINE FIELD deleted_at ON comment TYPE option<datetime>;
+CREATE TABLE docs.comments (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    block_id    UUID NOT NULL REFERENCES docs.blocks(id),
+    author_id   UUID NOT NULL,
+    parent_id   UUID REFERENCES docs.comments(id),  -- threaded replies
+    spans       JSONB NOT NULL DEFAULT '[]',
+    resolved    BOOLEAN NOT NULL DEFAULT FALSE,
+    resolved_by UUID,
+    resolved_at TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at  TIMESTAMPTZ
+);
 ```
 
-### `storage` Database
+### `storage` Schema
 
-```surql
-DEFINE TABLE file SCHEMAFULL;
-DEFINE FIELD workspace     ON file TYPE record<workspace>;
-DEFINE FIELD uploaded_by   ON file TYPE record<user>;
-DEFINE FIELD storage_key   ON file TYPE string;
-DEFINE FIELD original_name ON file TYPE string;
-DEFINE FIELD mime_type     ON file TYPE string;
-DEFINE FIELD size_bytes    ON file TYPE int;
-DEFINE FIELD checksum      ON file TYPE string;
-DEFINE FIELD created_at    ON file TYPE datetime DEFAULT time::now();
-DEFINE FIELD deleted_at    ON file TYPE option<datetime>;
-DEFINE INDEX idx_checksum  ON file FIELDS workspace, checksum;
+```sql
+CREATE TABLE storage.files (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id  UUID NOT NULL,
+    uploaded_by   UUID NOT NULL,
+    storage_key   VARCHAR NOT NULL,
+    original_name VARCHAR NOT NULL,
+    mime_type     VARCHAR NOT NULL,
+    size_bytes    BIGINT NOT NULL,
+    checksum      VARCHAR NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at    TIMESTAMPTZ
+);
+CREATE INDEX ON storage.files (workspace_id, checksum);
 ```
 
-### `notifications` Database
+### `notifications` Schema
 
-```surql
-DEFINE TABLE notification SCHEMAFULL;
-DEFINE FIELD user              ON notification TYPE record<user>;
-DEFINE FIELD notification_type ON notification TYPE string
-    ASSERT $value IN ["page_shared", "comment", "invite", "mention", "page_updated"];
-DEFINE FIELD payload           ON notification TYPE object;
-DEFINE FIELD read              ON notification TYPE bool DEFAULT false;
-DEFINE FIELD idempotency_key   ON notification TYPE string;
-DEFINE FIELD created_at        ON notification TYPE datetime DEFAULT time::now();
-DEFINE FIELD read_at           ON notification TYPE option<datetime>;
-DEFINE INDEX idx_user_unread   ON notification FIELDS user, read;
-DEFINE INDEX idx_idem_key      ON notification FIELDS idempotency_key UNIQUE;
+```sql
+CREATE TABLE notifications.notifications (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id           UUID NOT NULL,
+    notification_type VARCHAR NOT NULL
+                          CHECK (notification_type IN ('page_shared','comment','invite','mention','page_updated')),
+    payload           JSONB NOT NULL DEFAULT '{}',
+    read              BOOLEAN NOT NULL DEFAULT FALSE,
+    idempotency_key   VARCHAR NOT NULL UNIQUE,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    read_at           TIMESTAMPTZ
+);
+CREATE INDEX ON notifications.notifications (user_id, read, created_at DESC);
 ```
 
-### `analytics` Database
+### `analytics` Schema
 
-```surql
-DEFINE TABLE analytics_event SCHEMAFULL;
-DEFINE FIELD workspace   ON analytics_event TYPE record<workspace>;
-DEFINE FIELD user        ON analytics_event TYPE option<record<user>>;
-DEFINE FIELD event_type  ON analytics_event TYPE string;
-DEFINE FIELD properties  ON analytics_event TYPE object DEFAULT {};
-DEFINE FIELD occurred_at ON analytics_event TYPE datetime DEFAULT time::now();
+```sql
+CREATE TABLE analytics.events (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id UUID NOT NULL,
+    user_id      UUID,
+    event_type   VARCHAR NOT NULL,
+    properties   JSONB NOT NULL DEFAULT '{}',
+    occurred_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 -- Append-only: no UPDATE or DELETE permitted on this table
+CREATE INDEX ON analytics.events (workspace_id, event_type, occurred_at);
 ```
 
-### `audit` Database
+### `audit` Schema
 
-```surql
-DEFINE TABLE audit_event SCHEMAFULL;
-DEFINE FIELD workspace   ON audit_event TYPE record<workspace>;
-DEFINE FIELD actor_id    ON audit_event TYPE option<record<user>>;  -- null = system
-DEFINE FIELD event_type  ON audit_event TYPE string;
-DEFINE FIELD payload     ON audit_event TYPE object;
-DEFINE FIELD prev_hash   ON audit_event TYPE string;  -- SHA-256 of previous event (hash chain)
-DEFINE FIELD occurred_at ON audit_event TYPE datetime DEFAULT time::now();
--- Append-only: no UPDATE or DELETE permitted on this table
-DEFINE INDEX idx_workspace_time ON audit_event FIELDS workspace, occurred_at;
-```
+```sql
+CREATE TABLE audit.events (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id UUID NOT NULL,
+    actor_id     UUID,  -- NULL = system action
+    event_type   VARCHAR NOT NULL,
+    payload      JSONB NOT NULL DEFAULT '{}',
+    prev_hash    VARCHAR NOT NULL,  -- SHA-256 of previous event (hash chain)
+    occurred_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- Append-only: no UPDATE or DELETE
+CREATE INDEX ON audit.events (workspace_id, occurred_at);
 
-### Webhook Outbox (`users` Database)
-
-```surql
--- Outbox pattern: written atomically alongside the originating DB change
-DEFINE TABLE webhook_outbox SCHEMAFULL;
-DEFINE FIELD workspace    ON webhook_outbox TYPE record<workspace>;
-DEFINE FIELD event_type   ON webhook_outbox TYPE string;
-DEFINE FIELD payload      ON webhook_outbox TYPE object;
-DEFINE FIELD status       ON webhook_outbox TYPE string DEFAULT "pending"
-    ASSERT $value IN ["pending", "delivered", "failed", "dead"];
-DEFINE FIELD attempts     ON webhook_outbox TYPE int DEFAULT 0;
-DEFINE FIELD next_attempt_at ON webhook_outbox TYPE datetime DEFAULT time::now();
-DEFINE FIELD created_at   ON webhook_outbox TYPE datetime DEFAULT time::now();
-DEFINE INDEX idx_pending  ON webhook_outbox FIELDS status, next_attempt_at;
+-- Outbox pattern (in users schema, written alongside workspace changes)
+CREATE TABLE users.webhook_outbox (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id    UUID NOT NULL REFERENCES users.workspaces(id),
+    event_type      VARCHAR NOT NULL,
+    payload         JSONB NOT NULL DEFAULT '{}',
+    status          VARCHAR NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending','delivered','failed','dead')),
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX ON users.webhook_outbox (status, next_attempt_at) WHERE status = 'pending';
 ```
 
 ---
 
-## Graph Traversal Examples
+## Tree Traversal Queries
 
-```surql
--- All pages in a workspace (top-level only)
-SELECT ->child_page->page FROM workspace:uuid;
+```sql
+-- All top-level pages in a workspace (LTREE: direct children of root)
+SELECT * FROM docs.pages
+WHERE workspace_id = $1 AND parent_id IS NULL AND deleted_at IS NULL
+ORDER BY path;
 
--- Full recursive page subtree
-SELECT ->child_page->(page WHERE deleted_at = NONE) FROM page:uuid;
+-- Full page subtree (LTREE: all descendants)
+SELECT * FROM docs.pages
+WHERE path <@ (SELECT path FROM docs.pages WHERE id = $1)
+  AND deleted_at IS NULL;
 
--- All blocks in a page, ordered
-SELECT ->contains->(block WHERE deleted_at = NONE) FROM page:uuid
-    ORDER BY contains.sort_key;
+-- All blocks in a page, ordered (adjacency list: direct page children)
+SELECT * FROM docs.blocks
+WHERE page_id = $1 AND parent_id IS NULL AND deleted_at IS NULL
+ORDER BY sort_key;
 
--- All nested children of a block
-SELECT ->child_of->(block WHERE deleted_at = NONE) FROM block:uuid;
+-- Recursive block tree (full subtree of a block)
+WITH RECURSIVE block_tree AS (
+  SELECT *, 0 AS depth FROM docs.blocks
+  WHERE page_id = $1 AND parent_id IS NULL AND deleted_at IS NULL
+  UNION ALL
+  SELECT b.*, bt.depth + 1 FROM docs.blocks b
+  JOIN block_tree bt ON b.parent_id = bt.id
+  WHERE b.deleted_at IS NULL
+)
+SELECT * FROM block_tree ORDER BY depth, sort_key;
 
 -- All workspace members with roles
-SELECT <-member_of<-user.*, member_of.role FROM workspace:uuid;
+SELECT u.*, m.role, m.joined_at
+FROM users.workspace_members m
+JOIN users.users u ON u.id = m.user_id
+WHERE m.workspace_id = $1;
 
 -- All pages that link to a given page (backlinks)
-SELECT <-references<-block.page FROM page:uuid;
-
--- All database rows related to a given row via a specific relation property
-SELECT ->db_relation->(block WHERE deleted_at = NONE) FROM block:row_id
-    WHERE db_relation.property_id = "prop:uuid";
+SELECT DISTINCT b.page_id FROM docs.block_references br
+JOIN docs.blocks b ON b.id = br.from_block_id
+WHERE br.to_page_id = $1;
 
 -- Pages a user can see (respects visibility + permission overrides)
-SELECT * FROM page WHERE workspace = workspace:uuid
-    AND deleted_at = NONE
-    AND (
-        visibility = "workspace"
-        OR (visibility = "private" AND created_by = user:me)
-        OR (visibility = "custom" AND <-page_permission[WHERE user_id = user:me].role != NONE)
-    );
+SELECT p.* FROM docs.pages p
+WHERE p.workspace_id = $1 AND p.deleted_at IS NULL
+  AND (
+    p.visibility = 'workspace'
+    OR (p.visibility = 'private' AND p.created_by = $2)
+    OR (p.visibility = 'custom' AND EXISTS (
+      SELECT 1 FROM docs.page_permissions pp
+      WHERE pp.page_id = p.id AND pp.user_id = $2
+    ))
+  );
 
--- User's starred pages (ordered by when they were starred)
-SELECT ->favorites->page.* FROM user:uuid ORDER BY favorites.created_at DESC;
+-- User's starred pages
+SELECT p.* FROM users.user_favorites f
+JOIN docs.pages p ON p.id = f.page_id
+WHERE f.user_id = $1 AND p.deleted_at IS NULL
+ORDER BY f.created_at DESC;
 
--- Recently visited pages (from Redis sorted set — not a SurrealDB query)
--- ZREVRANGE bittree:recents:{user_id} 0 19 WITHSCORES
+-- Optimistic locking: conditional update
+UPDATE docs.blocks
+SET content = $1, version = version + 1, updated_at = NOW()
+WHERE id = $2 AND version = $3;
+-- 0 rows updated = version conflict → application returns 409
 ```
 
 ---
 
-## `block.content` Object Schema by Type
+## Real-Time: LISTEN/NOTIFY
+
+The collaboration-service subscribes to block changes within a page using PostgreSQL's `LISTEN/NOTIFY` for same-instance notifications, plus NATS JetStream for cross-instance fan-out:
+
+```sql
+-- Trigger: notify on block update
+CREATE OR REPLACE FUNCTION docs.notify_block_change()
+RETURNS TRIGGER AS $$
+BEGIN
+  PERFORM pg_notify(
+    'block_updates_' || NEW.page_id::text,
+    json_build_object('op', TG_OP, 'block_id', NEW.id, 'version', NEW.version)::text
+  );
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER block_change_notify
+AFTER INSERT OR UPDATE ON docs.blocks
+FOR EACH ROW EXECUTE FUNCTION docs.notify_block_change();
+```
+
+```rust
+// Rust (sqlx): listen for block changes on a page
+let mut listener = PgListener::connect_with(&pool).await?;
+listener.listen(&format!("block_updates_{}", page_id)).await?;
+while let Ok(notification) = listener.recv().await {
+    // process notification.payload()
+}
+```
+
+---
+
+## `block.content` JSONB Schema by Type
 
 ```json
 // paragraph / heading_1–3 / quote / callout
@@ -556,7 +642,7 @@ SELECT ->favorites->page.* FROM user:uuid ORDER BY favorites.created_at DESC;
 { "code": "fn main() {}", "language": "rust" }
 
 // image / file
-{ "file_id": "file:uuid", "caption": "optional" }
+{ "file_id": "uuid", "caption": "optional" }
 
 // bookmark
 { "url": "https://...", "og_title": "...", "og_description": "...", "og_image": "..." }
@@ -574,7 +660,7 @@ SELECT ->favorites->page.* FROM user:uuid ORDER BY favorites.created_at DESC;
 { "width_ratio": 0.5 }  // fraction of total width; all siblings must sum to 1.0
 
 // synced_block
-{ "source_block_id": "block:uuid" }  // null if this IS the canonical source
+{ "source_block_id": "uuid" }  // null if this IS the canonical source
 
 // table_of_contents
 {}  // no stored content — derived at read time by scanning heading blocks in page
@@ -591,7 +677,7 @@ SELECT ->favorites->page.* FROM user:uuid ORDER BY favorites.created_at DESC;
     { "id": "prop:uuid", "name": "Due",    "type": "date" },
     { "id": "prop:uuid", "name": "Owner",  "type": "person" },
     { "id": "prop:uuid", "name": "Linked", "type": "relation",
-      "target_database_id": "page:uuid", "sync_direction": "bidirectional" },
+      "target_database_id": "uuid", "sync_direction": "bidirectional" },
     { "id": "prop:uuid", "name": "Total",  "type": "rollup",
       "relation_property_id": "prop:uuid", "target_property_id": "prop:uuid",
       "aggregation": "sum" }
@@ -606,7 +692,7 @@ SELECT ->favorites->page.* FROM user:uuid ORDER BY favorites.created_at DESC;
 
 ## `block.sort_key` — Fractional Indexing
 
-Blocks use a lexicographically sortable string key (e.g., `"a0"`, `"a1"`, `"a0V"`) stored on the graph edge (`contains.sort_key`, `child_of.sort_key`). Inserting between two items generates a midpoint key with no renumbering.
+Blocks use a lexicographically sortable string key (e.g., `"a0"`, `"a1"`, `"a0V"`) stored in the `sort_key` column. Inserting between two items generates a midpoint key with no renumbering.
 
 When sort keys grow too long (pathological insert patterns), the rebalancer uses **interval DP** to find the minimum set of re-keys. See Phase 3 in `FEATURE_LIST.md`.
 
@@ -614,44 +700,18 @@ Reference: [Figma's fractional indexing post](https://www.figma.com/blog/realtim
 
 ---
 
-## Optimistic Locking
-
-```surql
--- Conditional update: only succeeds if version matches
-UPDATE block:uuid
-    SET content = $content, version = version + 1, updated_at = time::now()
-    WHERE version = $expected_version;
--- Zero rows updated = version conflict — application must retry or return 409
-```
-
----
-
-## LIVE SELECT (Real-Time)
-
-The collaboration-service subscribes to block changes within a page:
-
-```surql
-LIVE SELECT * FROM block WHERE page = page:uuid;
-```
-
-This streams `CREATE`, `UPDATE`, `DELETE` diffs to the Rust subscriber. Combined with NATS for cross-instance fan-out, this is the real-time backbone. See ADR-001 for the full rationale.
-
----
-
 ## Rust Type Mapping
 
 ```
-SurrealDB Record      ↔  Rust Struct (serde::Deserialize, libs/shared)
+PostgreSQL Table         ↔  Rust Struct (sqlx::FromRow, libs/shared)
 ──────────────────────────────────────────────────────────────────────
-user                  ↔  User       { id: UserId, email: String, ... }
-workspace             ↔  Workspace  { id: WorkspaceId, slug: String, ... }
-page                  ↔  Page       { id: PageId, visibility: Visibility, version: i64, ... }
-block                 ↔  Block      { id: BlockId, block_type: BlockType, content: BlockContent, ... }
-member_of  (edge)     ↔  MemberEdge { role: WorkspaceRole, joined_at: DateTime<Utc> }
-child_of   (edge)     ↔  ChildEdge  { sort_key: String }
-references (edge)     ↔  RefEdge    { created_at: DateTime<Utc> }
-db_relation (edge)    ↔  RelEdge    { property_id: PropertyId, created_at: DateTime<Utc> }
-notification          ↔  Notification { id: NotifId, notification_type: NotifType, ... }
+users.users              ↔  User       { id: UserId, email: String, ... }
+users.workspaces         ↔  Workspace  { id: WorkspaceId, slug: String, ... }
+docs.pages               ↔  Page       { id: PageId, visibility: Visibility, version: i32, ... }
+docs.blocks              ↔  Block      { id: BlockId, block_type: BlockType, content: Json<BlockContent>, ... }
+users.workspace_members  ↔  Member     { role: WorkspaceRole, joined_at: DateTime<Utc> }
+docs.block_references    ↔  BlockRef   { from_block_id: BlockId, to_page_id: PageId, ... }
+notifications.notifications ↔ Notification { id: NotifId, notification_type: NotifType, ... }
 ```
 
-All ID types are newtypes over `Uuid` in `libs/shared` (e.g., `UserId(Uuid)`, `PageId(Uuid)`). Record IDs that cross database boundaries are stored as `String` and parsed at the application layer.
+All ID types are newtypes over `Uuid` in `libs/shared`. Cross-schema references that cannot use FK constraints are stored as `Uuid` and validated at the application layer.

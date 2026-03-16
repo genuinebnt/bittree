@@ -45,8 +45,11 @@
 | **Testcontainer** | A Docker container started programmatically during tests to provide real infrastructure (Postgres, Redis). |
 | **JetStream** | NATS's durable, persistent messaging layer (equivalent to Kafka consumer groups). Used for reliable event delivery. |
 | **Fractional Index** | A lexicographically sortable string key that allows inserting between two elements. See `block.sort_key`. |
-| **LTREE** | A PostgreSQL extension for storing and querying hierarchical label paths. Used for `page.path`. |
+| **LTREE** | A PostgreSQL extension for storing hierarchical label paths as dot-separated strings (e.g. `root.abc.def`). Used for `page.path` to enable efficient subtree queries with the `@>` operator. |
 | **JSONB** | PostgreSQL's binary JSON column type. Used for `block.content` and `block.properties`. |
+| **Recursive CTE** | A Common Table Expression with a `UNION ALL` self-reference, used in PostgreSQL to traverse tree structures (page hierarchy, block tree) without application-side recursion. |
+| **Adjacency List** | A table design where each row stores a `parent_id` referencing another row in the same table. Used for both the page tree and block tree in BitTree. |
+| **sqlx** | The primary Rust database library. Provides compile-time checked SQL queries via the `query!` and `query_as!` macros — queries are verified against the real schema at compile time, turning schema mismatches into compiler errors. |
 | **Optimistic Locking** | A concurrency strategy where a `version` field is checked on write — if it has changed, the write is rejected, prompting a retry. |
 
 ---

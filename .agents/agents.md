@@ -4,7 +4,7 @@
 
 **BitTree** is a collaborative, block-based note-taking app (Notion-inspired). Documents are trees of typed blocks. Multiple users edit simultaneously. Everything is scoped to workspaces with RBAC.
 
-**Stack:** Full-stack Rust — Axum + Tokio backend microservices, Leptos SSR/WASM frontend, SurrealDB (multi-model: document + graph), NATS JetStream for events, Redis for cache/sessions, MinIO/S3 for files.
+**Stack:** Full-stack Rust — Axum + Tokio backend microservices, Leptos SSR/WASM frontend, PostgreSQL 16 + sqlx (compile-time checked queries, JSONB, LTREE), NATS JetStream for events, Redis for cache/sessions, MinIO/S3 for files.
 
 **Learning goals:** Intermediate–advanced Rust · microservice architecture · system design · distributed systems · backend security · cloud/IaC · DSA · DevOps · data modelling · ETL pipelines.
 
@@ -89,15 +89,16 @@ Use and reference these resources liberally:
 | [Leptos examples](https://github.com/leptos-rs/leptos/tree/main/examples)   | Every Leptos pattern in practice               |
 | [cargo-leptos](https://github.com/leptos-rs/cargo-leptos)                   | Leptos build tool — hot reload, WASM bundling  |
 
-### SurrealDB
+### PostgreSQL & sqlx
 
 | Resource                                                                    | Focus                                          |
 | --------------------------------------------------------------------------- | ---------------------------------------------- |
-| [SurrealDB Rust SDK](https://surrealdb.com/docs/sdk/rust)                   | Connection, typed queries, `surrealdb` crate   |
-| [SurrealQL Reference](https://surrealdb.com/docs/surrealql)                 | Query language, schema, LIVE SELECT            |
-| [SurrealDB Graph Relations](https://surrealdb.com/docs/surrealql/statements/relate) | `RELATE`, `->`, `<-` graph traversal |
-| [SurrealDB LIVE SELECT](https://surrealdb.com/docs/surrealql/statements/live) | Real-time change subscriptions               |
-| [SurrealDB embedded mode](https://surrealdb.com/docs/sdk/rust/setup)        | `Surreal::new::<Mem>(())` for tests            |
+| [sqlx docs](https://docs.rs/sqlx)                                           | `query!`, `query_as!`, `FromRow`, `PgPool`, `#[sqlx::test]` |
+| [Zero To Production Ch 3–5](https://www.zero2prod.com/)                     | sqlx migrations, `#[sqlx::test]`, connection pooling |
+| [DDIA Ch 3 & 7](https://dataintensive.net/)                                 | Storage engines, MVCC, transaction isolation   |
+| [PostgreSQL EXPLAIN docs](https://www.postgresql.org/docs/current/sql-explain.html) | Query planning, index usage, `EXPLAIN ANALYZE` |
+| [PostgreSQL LTREE docs](https://www.postgresql.org/docs/current/ltree.html) | Hierarchical path queries for page tree        |
+| [PostgreSQL LISTEN/NOTIFY](https://www.postgresql.org/docs/current/sql-listen.html) | Real-time change notifications via `sqlx` |
 
 ### Architecture & Distributed Systems
 
@@ -161,7 +162,7 @@ Presentation → Domain ← Infrastructure
 ### Key Rules
 
 - **Domain** has zero external dependencies — pure Rust types, traits, business logic.
-- **Infrastructure** implements domain traits (e.g., `impl PostRepository for SeaOrmPostRepo`).
+- **Infrastructure** implements domain traits (e.g., `impl PageRepo for PostgresPageRepo`).
 - **Presentation** orchestrates — receives HTTP requests, calls domain logic, returns responses.
 - **Services are hot-swappable** — switching from PostgreSQL to CockroachDB, Redis to DragonflyDB, or NATS to Kafka should require changes **only** in the infrastructure layer.
 

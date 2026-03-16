@@ -49,10 +49,8 @@ tracing-log               = { version = "0.2" }
 config        = { version = "0.14" }
 secrecy       = { version = "0.10", features = ["serde"] }
 
-# --- Database (SurrealDB) ---
-# Services connect remotely to the Docker container.
-# libs/test-utils adds `kv-mem` for fast in-process tests.
-surrealdb     = { version = "2" }
+# --- Database (PostgreSQL) ---
+sqlx          = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "migrate"] }
 
 # --- Cache (Redis) ---
 fred          = { version = "10", features = ["tokio-runtime"] }

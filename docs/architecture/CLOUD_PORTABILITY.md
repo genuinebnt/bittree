@@ -6,9 +6,9 @@
 
 ## Local vs Cloud Stack
 
-| Role | Local (Docker Compose) | Cloud (AWS / SurrealDB Cloud) |
+| Role | Local (Docker Compose) | Cloud (AWS) |
 |---|---|---|
-| Primary Database | `surrealdb/surrealdb:latest` | SurrealDB Cloud or self-hosted on ECS |
+| Primary Database | `postgres:16-alpine` | Amazon RDS PostgreSQL / Aurora |
 | Cache / Session | `redis:7` | Amazon ElastiCache (Redis) |
 | Message Broker | `nats:2` (JetStream) | Amazon SQS + SNS or managed NATS |
 | Object Storage | `minio/minio` | Amazon S3 |
@@ -17,7 +17,7 @@
 | Metrics | `prom/prometheus` + `grafana/grafana` | Amazon CloudWatch or Grafana Cloud |
 | Secrets | `.env` file (git-ignored) | AWS Secrets Manager / SSM Parameter Store |
 
-> **Note on SurrealDB Cloud:** SurrealDB offers a managed cloud offering. For self-hosted cloud deployments, run SurrealDB on ECS/EKS with persistent EBS volumes and regular snapshots to S3.
+> **Note on RDS PostgreSQL:** For cloud deployments, use Amazon RDS PostgreSQL (or Aurora PostgreSQL-compatible). One RDS instance with one schema per service. Use Multi-AZ for production availability.
 
 ---
 
@@ -26,15 +26,15 @@
 ### Database Repositories
 
 ```
-trait UserRepo               → SurrealUserRepo (surrealdb crate)
-trait WorkspaceRepo          → SurrealWorkspaceRepo
-trait PageRepo               → SurrealPageRepo
-trait BlockRepo              → SurrealBlockRepo
-trait FileMetadataRepo       → SurrealFileMetadataRepo
-trait NotificationRepo       → SurrealNotificationRepo
+trait UserRepo               → PostgresUserRepo (sqlx crate)
+trait WorkspaceRepo          → PostgresWorkspaceRepo
+trait PageRepo               → PostgresPageRepo
+trait BlockRepo              → PostgresBlockRepo
+trait FileMetadataRepo       → PostgresFileMetadataRepo
+trait NotificationRepo       → PostgresNotificationRepo
 ```
 
-**Swappable:** The trait abstraction means swapping to PostgreSQL (via `sqlx`) only requires a new concrete impl — domain code is unchanged.
+**Swappable:** The trait abstraction means swapping the Postgres implementation (e.g., for an in-memory impl in unit tests) only requires a new concrete impl — domain code is unchanged.
 
 ### Cache
 
@@ -111,6 +111,8 @@ All config fields are overridable via env vars using double-underscore nesting:
 ```
 APP__DATABASE__HOST=mydb.cluster.us-east-1.rds.amazonaws.com
 APP__DATABASE__PORT=5432
+APP__DATABASE__NAME=bittree_auth
+APP__DATABASE__MAX_CONNECTIONS=10
 APP__JWT__PRIVATE_KEY_PEM=...
 ```
 
@@ -133,13 +135,13 @@ The Rust `Settings` struct uses `config` crate with `Environment` source — req
 ### Rule: Tests hit real local equivalents — never mocks for infrastructure
 
 ```
-[test] → SurrealDB embedded (Mem) or Testcontainers (SurrealDB + Redis + NATS) → Service under test
+[test] → #[sqlx::test] (auto Postgres DB per test) or Testcontainers (postgres:16-alpine + Redis + NATS) → Service under test
 ```
 
 - `libs/test-utils` exposes `TestContext` that wires concrete impls
-- **Unit/integration tests:** Use `Surreal::new::<Mem>(())` — no Docker needed, fast startup, in-process
-- **Full integration tests:** Use `Testcontainers` (`surrealdb/surrealdb` container) for parity with prod
-- Each test gets an isolated SurrealDB namespace (random UUID) to allow parallel test runs
+- **Unit/integration tests:** Use `#[sqlx::test]` macro — automatically creates and tears down a real Postgres database per test function; no Docker required
+- **Full integration tests:** Use `Testcontainers` (`postgres:16-alpine` container) for parity with prod
+- Each `#[sqlx::test]` function gets an isolated database to allow parallel test runs
 - Container startup is cached within a test run via `once_cell::sync::Lazy`
 
 ### Example pattern (TypeScript-style pseudocode for illustration):
@@ -162,7 +164,7 @@ The **Rust implementation** is yours to write — see `libs/test-utils`.
 File: `docker-compose.yml` at workspace root.
 
 Services to define:
-- `postgres` — one instance, multiple databases (one per service)
+- `postgres` — one instance, one schema per service (`auth`, `users`, `docs`, `storage`, `notifications`, `analytics`, `audit`)
 - `redis` — single instance for all services locally
 - `nats` — JetStream enabled
 - `minio` — S3-compatible object storage
@@ -182,7 +184,8 @@ All services connect to these via `localhost` defaults in `config.yaml`.
   Internet ──▶ ALB ─▶ ECS (api-gateway) ──▶ ECS (services) │
                     │                       │              │
                     │              ┌────────▼────────┐     │
-                    │              │  RDS Postgres   │     │
+                    │              │  Amazon RDS     │     │
+                    │              │  PostgreSQL     │     │
                     │              │  ElastiCache    │     │
                     │              │  SQS/SNS        │     │
                     │              │  S3             │     │

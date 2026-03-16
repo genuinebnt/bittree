@@ -1,7 +1,7 @@
 # ADR-001 — SurrealDB as Primary Database + Leptos for Full-Stack Rust
 
 **Date:** 2026-03-15
-**Status:** Accepted
+**Status:** Superseded by [ADR-002](ADR-002-switch-to-postgresql.md)
 **Deciders:** @genuinebasilnt
 
 ---
