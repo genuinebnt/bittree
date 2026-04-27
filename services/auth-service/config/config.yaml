@@ -1,0 +1,35 @@
+application:
+  host: "127.0.0.1"
+  port: 8001
+
+database:
+  engine: postgres
+  hostname: "localhost"
+  port: 5432
+  username: "bittree"
+  database_name: "bittree_auth"
+  # password: injected via APP__DATABASE__PASSWORD
+  require_ssl: false
+  min_connections: 2
+  max_connections: 10
+  connect_timeout_seconds: 5
+  idle_timeout_seconds: 600
+
+cache:
+  local:
+    max_capacity: 1000
+    ttl_seconds: 30
+    tti_seconds: 10
+  distributed:
+    engine: redis
+    host: "localhost"
+    port: 6379
+    # password: injected via APP__CACHE__DISTRIBUTED__PASSWORD
+    database: 0
+    ttl_seconds: 300
+
+messaging:
+  engine: nats
+  host: "localhost"
+  port: 4222
+  # credentials: injected via APP__MESSAGING__CREDENTIALS

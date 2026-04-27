@@ -1,0 +1,16 @@
+[package]
+name = "infra"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-bunyan-formatter.workspace = true
+tracing-log.workspace = true
+sqlx.workspace = true
+axum = { workspace = true, features = ["ws"] }
+serde = { workspace = true, features = ["derive"] }
+paste.workspace = true
+config.workspace = true
+secrecy = { workspace = true, features = ["serde"] }

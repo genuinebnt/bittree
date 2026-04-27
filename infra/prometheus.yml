@@ -1,0 +1,22 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # ── BitTree services ──────────────────────────────────────
+  # Uncomment each target as the service is built
+  - job_name: "auth-service"
+    static_configs:
+      - targets: ["host.docker.internal:8001"]
+
+  # - job_name: "user-service"
+  #   static_configs:
+  #     - targets: ["host.docker.internal:8002"]
+
+  # - job_name: "document-service"
+  #   static_configs:
+  #     - targets: ["host.docker.internal:8003"]
+
+  # - job_name: "api-gateway"
+  #   static_configs:
+  #     - targets: ["host.docker.internal:8000"]

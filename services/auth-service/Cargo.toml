@@ -1,0 +1,45 @@
+[package]
+name = "auth-service"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "auth-service"
+path = "src/main.rs"
+
+[lib]
+name = "auth_service"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+hyper = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde-aux = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-bunyan-formatter = { workspace = true }
+tracing-log = { workspace = true }
+config = { workspace = true }
+secrecy = { workspace = true }
+sqlx = { workspace = true }
+moka = { workspace = true }
+jsonwebtoken = { workspace = true }
+argon2 = { workspace = true }
+rand_core = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+validator = { workspace = true }
+infra = { path = "../../libs/infra" }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
