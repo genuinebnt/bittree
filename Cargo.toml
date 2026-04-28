@@ -4,7 +4,6 @@ members = [
   "libs/infra",
   "libs/domain",
   "libs/test-utils",
-  "services/auth-service",
   "services/document-service",
   # Add each service as its phase begins:
   # "services/user-service",
