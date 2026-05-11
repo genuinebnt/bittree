@@ -1,17 +1,36 @@
-// PageRepository trait (async_trait, Send + Sync + 'static + Debug):
-//   create(page: Page) -> Result<PageId>
-//   find_by_id(id: PageId) -> Result<Page>
-//   find_by_workspace(workspace_id: WorkspaceId) -> Result<Vec<Page>>
-//   update(page: Page) -> Result<()>
-//   soft_delete(id: PageId) -> Result<()>
-//
-// pub type DynPageRepository = Arc<dyn PageRepository>
-//
-// BlockRepository trait (async_trait, Send + Sync + 'static + Debug):
-//   create(block: Block) -> Result<BlockId>
-//   find_by_id(id: BlockId) -> Result<Block>
-//   find_by_page(page_id: PageId) -> Result<Vec<Block>>
-//   update_content(id: BlockId, content: Value, expected_version: i32) -> Result<()>
-//   soft_delete(id: BlockId) -> Result<()>
-//
-// pub type DynBlockRepository = Arc<dyn BlockRepository>
+use std::{fmt::Debug, sync::Arc};
+
+use async_trait::async_trait;
+
+use crate::domain::{
+    entities::{block::Block, page::Page},
+    errors::Result,
+    types::{BlockId, PageId, WorkspaceId},
+};
+
+#[async_trait]
+pub trait PageRepository: Send + Sync + 'static + Debug {
+    async fn create(&self, page: Page) -> Result<PageId>;
+    async fn find_by_id(&self, id: PageId) -> Result<Page>;
+    async fn find_by_workspace(&self, workspace_id: WorkspaceId) -> Result<Vec<Page>>;
+    async fn update(&self, page: Page) -> Result<()>;
+    async fn soft_delete(&self, id: PageId) -> Result<()>;
+}
+
+pub type DynPageRepository = Arc<dyn PageRepository>;
+
+#[async_trait]
+pub trait BlockRepository: Send + Sync + 'static + Debug {
+    async fn create(&self, block: Block) -> Result<BlockId>;
+    async fn find_by_id(&self, id: BlockId) -> Result<Block>;
+    async fn find_by_page(&self, page_id: PageId) -> Result<Vec<Block>>;
+    async fn update_content(
+        &self,
+        id: BlockId,
+        content: serde_json::Value,
+        expected_version: i32,
+    ) -> Result<()>;
+    async fn soft_delete(&self, id: BlockId) -> Result<()>;
+}
+
+pub type DynBlockRepository = Arc<dyn BlockRepository>;

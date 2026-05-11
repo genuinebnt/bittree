@@ -1,18 +1,66 @@
+use chrono::Utc;
+use serde_json::json;
+
+use crate::domain::{
+    errors::{DomainError, Result},
+    types::{BlockId, BlockType, DateTimeWithTimezone, PageId, UserId},
+};
+
 // Block — maps to docs.blocks table
-//   id: BlockId, page_id: PageId, parent_id: Option<BlockId>,
-//   created_by: UserId, last_edited_by: UserId, block_type: BlockType,
-//   content: serde_json::Value, properties: serde_json::Value,
-//   sort_key: String, source_block_id: Option<BlockId>, version: i32,
-//   created_at / updated_at / deleted_at: DateTimeWithTimezone
-//
-// impl Block:
-//   pub fn new(page_id, parent_id, created_by, block_type, sort_key) -> domain::Result<Block>
-//     - errors on empty sort_key → DomainError::InvalidSortKey
-//     - sets version = 0, content = json!({}), properties = json!({})
-//     - sets source_block_id = None, deleted_at = None
-//     - sets created_at = updated_at = Utc::now()
-//     - sets created_by = last_edited_by = created_by arg
-//   pub fn is_deleted(&self) -> bool
+#[derive(Debug)]
+pub struct Block {
+    id: BlockId,
+    page_id: PageId,
+    parent_id: Option<BlockId>,
+    created_by: UserId,
+    last_edited_by: UserId,
+    block_type: BlockType,
+    content: serde_json::Value,
+    properties: serde_json::Value,
+    sort_key: String,
+    source_block_id: Option<BlockId>,
+    version: i32,
+    created_at: DateTimeWithTimezone,
+    updated_at: DateTimeWithTimezone,
+    deleted_at: Option<DateTimeWithTimezone>,
+}
+
+impl Block {
+    pub fn new(
+        page_id: PageId,
+        parent_id: Option<BlockId>,
+        created_by: UserId,
+        block_type: BlockType,
+        sort_key: String,
+    ) -> Result<Self> {
+        if sort_key.is_empty() {
+            return Err(DomainError::InvalidSortKey(sort_key));
+        }
+
+        let now = Utc::now();
+
+        Ok(Self {
+            id: BlockId::generate(),
+            page_id,
+            parent_id,
+            created_by,
+            last_edited_by: created_by,
+            block_type,
+            content: json!({}),
+            properties: json!({}),
+            sort_key,
+            source_block_id: None,
+            version: 0,
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+        })
+    }
+
+    pub fn is_deleted(&self) -> bool {
+        self.deleted_at.is_some()
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -33,50 +81,92 @@ mod tests {
 
     #[test]
     fn new_block_with_valid_args_succeeds() {
-        let result = Block::new(page_id(), None, user_id(), BlockType::Paragraph, "a0".to_string());
+        let result = Block::new(
+            page_id(),
+            None,
+            user_id(),
+            BlockType::Paragraph,
+            "a0".to_string(),
+        );
         assert!(result.is_ok());
     }
 
     #[test]
     fn new_block_with_empty_sort_key_fails() {
-        let err = Block::new(page_id(), None, user_id(), BlockType::Paragraph, "".to_string())
-            .unwrap_err();
+        let err = Block::new(
+            page_id(),
+            None,
+            user_id(),
+            BlockType::Paragraph,
+            "".to_string(),
+        )
+        .unwrap_err();
         assert!(matches!(err, DomainError::InvalidSortKey(_)));
     }
 
     #[test]
     fn new_block_starts_at_version_zero() {
-        let block = Block::new(page_id(), None, user_id(), BlockType::Paragraph, "a0".to_string())
-            .unwrap();
+        let block = Block::new(
+            page_id(),
+            None,
+            user_id(),
+            BlockType::Paragraph,
+            "a0".to_string(),
+        )
+        .unwrap();
         assert_eq!(block.version, 0);
     }
 
     #[test]
     fn new_block_is_not_deleted() {
-        let block = Block::new(page_id(), None, user_id(), BlockType::Paragraph, "a0".to_string())
-            .unwrap();
+        let block = Block::new(
+            page_id(),
+            None,
+            user_id(),
+            BlockType::Paragraph,
+            "a0".to_string(),
+        )
+        .unwrap();
         assert!(!block.is_deleted());
         assert!(block.deleted_at.is_none());
     }
 
     #[test]
     fn new_block_has_empty_content() {
-        let block = Block::new(page_id(), None, user_id(), BlockType::Paragraph, "a0".to_string())
-            .unwrap();
+        let block = Block::new(
+            page_id(),
+            None,
+            user_id(),
+            BlockType::Paragraph,
+            "a0".to_string(),
+        )
+        .unwrap();
         assert_eq!(block.content, json!({}));
     }
 
     #[test]
     fn new_block_has_empty_properties() {
-        let block = Block::new(page_id(), None, user_id(), BlockType::Paragraph, "a0".to_string())
-            .unwrap();
+        let block = Block::new(
+            page_id(),
+            None,
+            user_id(),
+            BlockType::Paragraph,
+            "a0".to_string(),
+        )
+        .unwrap();
         assert_eq!(block.properties, json!({}));
     }
 
     #[test]
     fn new_block_with_no_parent_is_direct_page_child() {
-        let block = Block::new(page_id(), None, user_id(), BlockType::Paragraph, "a0".to_string())
-            .unwrap();
+        let block = Block::new(
+            page_id(),
+            None,
+            user_id(),
+            BlockType::Paragraph,
+            "a0".to_string(),
+        )
+        .unwrap();
         assert!(block.parent_id.is_none());
     }
 
@@ -105,15 +195,27 @@ mod tests {
 
     #[test]
     fn new_block_has_no_source_block() {
-        let block = Block::new(page_id(), None, user_id(), BlockType::Paragraph, "a0".to_string())
-            .unwrap();
+        let block = Block::new(
+            page_id(),
+            None,
+            user_id(),
+            BlockType::Paragraph,
+            "a0".to_string(),
+        )
+        .unwrap();
         assert!(block.source_block_id.is_none());
     }
 
     #[test]
     fn new_block_records_its_block_type() {
-        let block =
-            Block::new(page_id(), None, user_id(), BlockType::Code, "a0".to_string()).unwrap();
+        let block = Block::new(
+            page_id(),
+            None,
+            user_id(),
+            BlockType::Code,
+            "a0".to_string(),
+        )
+        .unwrap();
         assert_eq!(block.block_type, BlockType::Code);
     }
 
@@ -132,8 +234,14 @@ mod tests {
 
     #[test]
     fn created_at_and_updated_at_are_equal_on_creation() {
-        let block = Block::new(page_id(), None, user_id(), BlockType::Paragraph, "a0".to_string())
-            .unwrap();
+        let block = Block::new(
+            page_id(),
+            None,
+            user_id(),
+            BlockType::Paragraph,
+            "a0".to_string(),
+        )
+        .unwrap();
         assert_eq!(block.created_at, block.updated_at);
     }
 }

@@ -242,6 +242,9 @@ Every major DSA category is encountered through a real production feature — no
 |---|---|
 | [`docs/planning/ROADMAP.md`](docs/planning/ROADMAP.md) | Phase-by-phase plan with DSA concepts map |
 | [`docs/planning/FEATURE_LIST.md`](docs/planning/FEATURE_LIST.md) | All features, endpoints, DSA targets, learning notes |
+| [`docs/planning/SKILLS_ANALYSIS.md`](docs/planning/SKILLS_ANALYSIS.md) | RustJobs.dev skill gap analysis, coverage map, action plan |
+| [`docs/planning/AWS_ROADMAP.md`](docs/planning/AWS_ROADMAP.md) | Step-by-step AWS and Kubernetes deployment guide |
+| [`docs/planning/DISTRIBUTED_SYSTEMS_STUDY_GUIDE.md`](docs/planning/DISTRIBUTED_SYSTEMS_STUDY_GUIDE.md) | Mapping DDIA, MIT 6.824, and Gossip Glomers to Bittree |
 | [`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md) | Service map, NATS event flow, request flow diagrams |
 | [`docs/architecture/DATA_MODEL.md`](docs/architecture/DATA_MODEL.md) | Mermaid ER diagram, full PostgreSQL schema |
 | [`docs/architecture/CLOUD_PORTABILITY.md`](docs/architecture/CLOUD_PORTABILITY.md) | Ports & adapters, local vs cloud stack, config strategy |

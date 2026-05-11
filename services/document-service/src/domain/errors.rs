@@ -12,10 +12,18 @@ pub enum DomainError {
     InvalidTitle(String),
     #[error("sort_key cannot be empty")]
     InvalidSortKey(String),
+    #[error("visibility not found: {0}")]
+    VisibilityNotFound(String),
     #[error("database connection failed")]
     Internal(#[source] anyhow::Error),
     #[error("unauthorized")]
     Unauthorized,
+}
+
+impl From<sqlx::Error> for DomainError {
+    fn from(error: sqlx::Error) -> Self {
+        DomainError::Internal(anyhow::anyhow!(error))
+    }
 }
 
 pub type Result<T> = std::result::Result<T, DomainError>;

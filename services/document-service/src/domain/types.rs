@@ -11,6 +11,8 @@ use infra::define_id;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::domain::errors::{DomainError, Result};
+
 pub type DateTimeWithTimezone = DateTime<Utc>;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -41,11 +43,52 @@ pub enum BlockType {
     DatabaseRow,
 }
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum Visibility {
     Private,
     Workspace,
     Custom,
     Public,
+}
+
+impl Visibility {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Visibility::Private => "private",
+            Visibility::Workspace => "workspace",
+            Visibility::Custom => "custom",
+            Visibility::Public => "public",
+        }
+    }
+
+    pub fn try_from_str(value: &str) -> Result<Self> {
+        match value {
+            "private" => Ok(Visibility::Private),
+            "workspace" => Ok(Visibility::Workspace),
+            "custom" => Ok(Visibility::Custom),
+            "public" => Ok(Visibility::Public),
+            _ => Err(DomainError::VisibilityNotFound(value.to_string())),
+        }
+    }
+}
+
+impl TryFrom<String> for Visibility {
+    type Error = DomainError;
+
+    fn try_from(value: String) -> Result<Self> {
+        Self::try_from_str(&value)
+    }
+}
+
+impl From<Visibility> for String {
+    fn from(value: Visibility) -> Self {
+        match value {
+            Visibility::Private => "private".to_string(),
+            Visibility::Workspace => "workspace".to_string(),
+            Visibility::Custom => "custom".to_string(),
+            Visibility::Public => "public".to_string(),
+        }
+    }
 }
 
 define_id!(Page);

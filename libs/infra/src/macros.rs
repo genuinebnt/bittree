@@ -24,6 +24,18 @@ macro_rules! define_id {
                     &self.0
                 }
             }
+
+            impl From<&[<$name Id>]> for Uuid {
+                fn from(value: &[<$name Id>]) -> Self {
+                    value.0
+                }
+            }
+
+            impl From<Uuid> for [<$name Id>] {
+                fn from(value: Uuid) -> Self {
+                    Self(value)
+                }
+            }
         }
     };
 }

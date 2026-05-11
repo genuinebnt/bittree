@@ -646,12 +646,12 @@ PostgreSQL models this as an explicit join table: `INSERT INTO docs.block_refere
 
 ## Phase 14 — BitTree Expression Language (BEL)
 
-> **Rust concepts:** Recursive enums + `Box<T>` for AST nodes, pattern matching on AST variants, `thiserror` for parse/type errors with source spans, `Display` for pretty-printing, `From`/`Into` for IR lowering, `wasm32`-compatible (runs in both browser and server)
+> **Rust concepts:** Recursive enums + `Box<T>` for AST nodes, pattern matching, `thiserror` with source spans, `#[repr(u8)]` opcode enum, `u64` NaN-boxing for the value stack, `Vec<GcObject>` arena heap, `unsafe` transmute for NaN tag extraction, `wasm32`-compatible
 > **System design:** Language pipeline as a layered service, shared `libs/bel` crate consumed by multiple services
-> **DSA:** Recursive descent parsing, Pratt parsing (precedence climbing), AST traversal, type inference, finite automata (lexer)
-> **Compiler concepts:** Lexing → parsing → AST → type checking → evaluation / code generation
+> **DSA:** Finite automaton (lexer), recursive descent + Pratt parsing, post-order AST traversal, type constraint propagation, NaN-boxing, tri-color mark-and-sweep GC, bytecode compiler, stack machine VM
+> **Compiler concepts:** Lexing → parsing → type checking → bytecode compilation → VM execution with GC
 
-BEL is a small, safe, statically-typed expression language embedded in BitTree. The **same language** powers four distinct use cases — one parser, four evaluation backends.
+BEL is a **strongly-typed, VM-based** expression language with a mark-and-sweep garbage collector. Source text compiles all the way to typed bytecode. Heap-allocated values (`String`, `List`) live on the GC heap. One pipeline, three backends: VM execution (primary), SQL filter transpiler, and WASM (same VM on `wasm32`).
 
 ### Language Overview
 
@@ -674,7 +674,7 @@ dateAdd(prop("Start"), 7, "days") > now()
 -- Search query (structured prefix syntax)
 type:page modified:>2024-01-01 author:@me "exact phrase"
 
--- Automation condition (Phase 25.5)
+-- Automation condition (Phase 14.11)
 row.status CHANGED TO "Done" AND row.assignee = @me
 ```
 
@@ -685,36 +685,48 @@ Source string (UTF-8)
         │
         ▼
   ┌─────────────┐
-  │    Lexer     │  Tokenize: identifiers, literals, operators, keywords
-  │  (FSM-based) │  Produces: Vec<Token> with byte-span positions
+  │    Lexer     │  FSM — one state per token class
+  │   (14.1)    │  Produces: Vec<Token> with byte-span positions
   └──────┬──────┘
          │
          ▼
   ┌─────────────┐
-  │   Parser    │  Recursive descent for statements
-  │ (Pratt for  │  Pratt parser for infix expressions (precedence + associativity)
-  │ expressions)│  Produces: Expr (recursive Rust enum, Box<Expr> for children)
+  │   Parser    │  Recursive descent (statements) + Pratt (infix precedence)
+  │   (14.2)    │  Produces: Expr (recursive enum, Box<Expr>)
   └──────┬──────┘
          │
          ▼
   ┌─────────────┐
-  │ Type Checker│  Walk AST, infer and propagate types
-  │             │  Produces: TypedExpr — every node annotated with BelType
-  │             │  Errors: TypeMismatch, UnknownProp, ArityError with span
+  │ Type Checker│  Post-order walk; constraint propagation; schema-aware
+  │   (14.3)    │  Produces: TypedExpr — every node annotated with BelType
   └──────┬──────┘
          │
-        ─┼─ fan out to one of four backends ─
-         │
-  ┌──────┴──────────────────────────────────────────┐
-  │                                                  │
-  ▼                      ▼              ▼            ▼
-Interpreter          SQL              WASM        Search
-(formula eval)       Transpiler      Evaluator    Query
-                  (filter → WHERE)  (client-side  Parser
-                                    formula eval)
+         ├──────────────────────────────────┐
+         ▼                                  ▼
+  ┌─────────────────────────────┐   ┌───────────────┐
+  │   Bytecode Compiler (14.6)  │   │ SQL Transpiler│  filter → parameterized
+  │   TypedExpr → Chunk         │   │   (14.8)      │  WHERE clause; never
+  │   { constants, Vec<Op> }    │   └───────────────┘  interpolates values
+  └──────────┬──────────────────┘
+             │
+             ▼
+  ┌───────────────────────────────────────────────┐
+  │  VM + GC Heap  (14.7)                         │
+  │  Stack machine; typed opcodes (ADD_NUM,        │
+  │  CONCAT_STR, CALL_BUILTIN …)                  │
+  │  GcHeap: tri-color mark-and-sweep             │
+  │  GcValue: NaN-boxed u64 (inline scalars,      │
+  │           GcPtr for String/List on heap)      │
+  └───────────────┬───────────────────────────────┘
+                  │
+                  ▼
+  ┌───────────────────────┐
+  │  WASM target (14.9)   │  same VM compiled to wasm32-unknown-unknown;
+  │                       │  bel_eval() callable from Leptos
+  └───────────────────────┘
 ```
 
-### Phase 25.1 — `libs/bel` Crate: Lexer
+### Phase 14.1 — `libs/bel` Crate: Lexer
 
 > **DSA:** Finite automaton — the lexer is a hand-rolled state machine with explicit states for each token class
 
@@ -731,7 +743,7 @@ Interpreter          SQL              WASM        Search
 - For the identifier scanner (longest common hot path), use `std::simd::u8x16` to test 16 bytes against the ASCII alphanumeric mask in one instruction
 - Check `logos` output via `cargo-asm` to see the SIMD `logos` generates — compare to your hand-rolled version
 
-### Phase 25.2 — `libs/bel` Crate: Parser & AST
+### Phase 14.2 — `libs/bel` Crate: Parser & AST
 
 > **DSA:** Recursive descent (statements, function calls), Pratt parser (infix expressions with precedence table), recursive `Box<Expr>` enum
 
@@ -751,7 +763,7 @@ Interpreter          SQL              WASM        Search
 
 **DSA lesson:** Pratt parsing is the most elegant way to handle operator precedence. Once you understand it, recursive descent for expressions feels clunky by comparison. Read: [Pratt Parsers — Made Simple (matklad)](https://matklad.github.io/2020/04/13/simple-but-powerful-pratt-parsing.html) — matklad is the author of rust-analyzer; this is the canonical Rust-flavoured Pratt explainer.
 
-### Phase 25.3 — `libs/bel` Crate: Type Checker
+### Phase 14.3 — `libs/bel` Crate: Type Checker
 
 > **DSA:** AST traversal (post-order walk), type inference via constraint propagation
 
@@ -763,45 +775,85 @@ Interpreter          SQL              WASM        Search
 - [ ] `if(cond, then, else)` requires `cond: Boolean`, `then` and `else` must unify to the same type
 - [ ] Functions are typed via a built-in function registry: `today() → Date`, `concat(...Text) → Text`, `floor(Number) → Number`, `dateAdd(Date, Number, Text) → Date`
 
-### Phase 25.4 — Filter Backend: SQL Transpiler
+### Phase 14.4 — Value Representation (`GcValue`, NaN-boxing)
 
-> **DSA:** AST-to-target compilation — tree transformation via pattern matching
+> **DSA:** NaN-boxing — encode all value types in a single `u64` using IEEE 754 quiet NaN payload bits
+
+- [ ] `GcValue` is a newtype over `u64`; all VM values pass through registers as `u64` — no allocation per value
+- [ ] Encoding: `f64` stored as-is when not NaN; `Null` / `Bool(false)` / `Bool(true)` as distinct NaN bit patterns; `GcPtr(u32)` encodes heap index in lower 32 bits of a NaN
+- [ ] Safe API: `GcValue::from_num(f64)`, `GcValue::null()`, `GcValue::from_bool(bool)`, `GcValue::from_ptr(GcPtr)` — all construction and extraction goes through these; `unsafe` transmute is contained here
+- [ ] **Benchmark:** implement the same `Value` as a tagged Rust enum (`enum Value { Num(f64), Bool(bool), Str(GcPtr), List(GcPtr), Null }`) first; benchmark both under 100k formula evaluations with `criterion`; confirm the NaN-boxing variant has a smaller stack footprint and fewer cache misses
+
+**Low-level lesson:** NaN-boxing is the technique LuaJIT and JavaScriptCore use to fit all value types in 64 bits. The key insight: IEEE 754 has `2^51 - 2` quiet NaN bit patterns; we only need a handful of them for our non-number types.
+
+### Phase 14.5 — GC: Tri-Color Mark-and-Sweep
+
+> **DSA:** Tri-color mark-and-sweep GC — white/gray/black invariant, write barrier, stop-the-world sweep
+
+- [ ] `GcHeap` struct: `objects: Vec<GcObject>`, `free_list: Vec<u32>`, `bytes_allocated: usize`, `gc_threshold: usize`
+- [ ] `GcObject { header: GcHeader, payload: GcPayload }` where `GcPayload` is `GcString(String)` or `GcList(Vec<GcValue>)`
+- [ ] `GcHeader { color: Color }` where `Color` is `White | Gray | Black`; reset all to `White` after sweep
+- [ ] `GcPtr(u32)` — a 32-bit index into `GcHeap.objects`; safe to move during compaction; stored inside `GcValue` NaN payload
+- [ ] **Mark phase:** collect roots (VM value stack); push to `gray_worklist: Vec<u32>`; loop: pop gray object → trace its `GcValue` children → push white children to gray worklist → mark current black
+- [ ] **Write barrier:** when storing a `GcPtr` into an already-black object, re-gray the parent — prevents the tri-color invariant from being violated mid-mark
+- [ ] **Sweep phase:** iterate `objects`; reclaim `White` slots back to `free_list`; reset all `Black` to `White`
+- [ ] **Trigger:** check `bytes_allocated > gc_threshold` after every `ConcatStr` / `BuildList` instruction; set `gc_threshold = 2 * bytes_allocated` after each sweep
+- [ ] **Stress test:** add a `--gc-stress` flag that triggers a GC before *every* allocation; run all tests with this flag to catch use-after-free bugs immediately
+
+**Distributed systems lesson:** The write barrier is the GC equivalent of a memory fence — it enforces a happens-before relationship between mutator writes and the marker's view of the heap.
+
+### Phase 14.6 — Bytecode Compiler
+
+> **DSA:** Bytecode compiler — `TypedExpr` → `Chunk { constants, code: Vec<Op> }`; jump fixup in two passes
+
+- [ ] `Chunk { constants: Vec<GcValue>, code: Vec<Op> }` — one chunk per compiled expression
+- [ ] `Op` is `#[repr(u8)]`; typed opcodes: `AddNum`, `SubNum`, `MulNum`, `DivNum`, `ConcatStr`, `EqNum`, `EqStr`, `LtNum`, `GteDate`, etc. — type resolved at compile time from `TypedExpr` annotations; no runtime type dispatch in the VM
+- [ ] Constants interned into `Chunk::constants`; `Const(u16)` opcode pushes by index
+- [ ] **Jump fixup:** emit `JumpIfFalse(0)` placeholder for short-circuit operators; record the offset; after compiling the right-hand side, patch the placeholder with the real relative offset
+- [ ] **Constant folding:** if both operands of a `BinOp` are `Literal` nodes, evaluate at compile time and emit `Const` instead of two pushes + an op
+- [ ] `#[cold]` on error-path dispatch arms — keeps hot instruction dispatch in the branch predictor
+
+### Phase 14.7 — VM: Stack Machine
+
+> **DSA:** Stack machine — push operands, pop and execute typed opcodes; GC integrated at allocation sites
+
+- [ ] `Vm { stack: Vec<GcValue>, heap: GcHeap }` — the complete VM state
+- [ ] `Vm::eval(chunk: &Chunk, row: &DatabaseRow) -> Result<GcValue, EvalError>` — main entry point
+- [ ] Dispatch loop: `match op { Op::AddNum => ..., Op::ConcatStr => { /* allocate on heap, maybe GC */ } ... }`
+- [ ] Built-in functions resolved at compile time to `Op::CallBuiltin(builtin_id, arity)` — no dynamic dispatch; `BuiltinFn` is an enum; the VM's builtin dispatch is a single match arm
+- [ ] Short-circuit: `JumpIfFalse` / `JumpIfNull` skip the right-hand side of `AND` / `OR` / null-propagating operators
+- [ ] Division by zero → push `GcValue::null()` + record `EvalError::DivisionByZero` (not a panic)
+- [ ] **GC roots during eval:** `stack.iter()` are the roots; any `GcPtr` on the stack must be reachable during a GC triggered inside `ConcatStr`
+
+### Phase 14.8 — Filter Backend: SQL Transpiler
+
+> **DSA:** AST-to-target compilation — tree transformation via pattern matching on `TypedExpr`
 
 - [ ] `FilterTranspiler::transpile(expr: &TypedExpr, schema: &PropertySchema) -> Result<String, TranspileError>` — walks the typed AST and emits a SQL `WHERE` clause fragment
 - [ ] `BinOp(And)` → `(...) AND (...)`, `BinOp(Eq)` → `(content->'property_values'->>$prop_id) = $val`
 - [ ] `In` → `(content->'property_values'->>$prop_id) IN (...)`
 - [ ] Date comparisons use standard SQL date functions: `today()` → `CURRENT_DATE`
 - [ ] `@me` resolves to the current user's ID, injected as a bound parameter (never interpolated into the query string — **SQL injection prevention**)
-- [ ] Output is a parameterised query fragment: `(String, Vec<Value>)` — the fragment + its positional bound parameters
+- [ ] Output: `(String, Vec<PgValue>)` — the parameterized fragment + positional bound parameters
 
-**Security lesson:** The transpiler must never interpolate user values directly into the query string — always bind parameters. The type checker enforces that `@me` and string literals are values, never identifiable as SQL keywords.
+**Security lesson:** The transpiler must never interpolate values into the query string — always bind. The type checker's `TypedExpr` annotation ensures `@me` and literals are values, never SQL keywords.
 
-### Phase 25.5 — Formula Backend: Tree-Walking Interpreter
-
-> **DSA:** Tree-walking interpreter — recursive evaluation of the typed AST
-
-- [ ] `Interpreter::eval(expr: &TypedExpr, row: &DatabaseRow) -> Result<Value, EvalError>` — evaluates a formula expression against a database row's property values
-- [ ] Evaluation is pure: no side effects, no I/O
-- [ ] `Value` enum: `Text(String)`, `Number(f64)`, `Boolean(bool)`, `Date(DateTime<Utc>)`, `List(Vec<Value>)`, `Null`
-- [ ] Built-in function implementations: `if`, `concat`, `length`, `toNumber`, `floor`, `ceil`, `round`, `today`, `now`, `dateAdd`, `dateBetween`, `format`
-- [ ] Division by zero → `Value::Null` (not a panic); all errors are `Value::Null` with an attached `EvalError`
-- [ ] Short-circuit evaluation: `false AND <anything>` never evaluates the right side
-
-### Phase 25.6 — WASM Build: Client-Side Formula Evaluation
+### Phase 14.9 — WASM Build: Client-Side Evaluation
 
 - [ ] `libs/bel` compiles to `wasm32-unknown-unknown` — no I/O, no threads, no `std::fs`
+- [ ] The GC heap works in WASM: `Vec<GcObject>` allocates via `wasm32`'s `alloc`; stop-the-world sweep requires no thread coordination
 - [ ] Gate any server-only code with `#[cfg(not(target_arch = "wasm32"))]`
 - [ ] Export `bel_eval(formula: &str, row_json: &str) -> String` as a WASM function callable from Leptos
-- [ ] Client evaluates formula properties locally as the user types — no round trip needed
+- [ ] Client evaluates formula properties locally as the user types — no server round-trip
 
-### Phase 25.7 — API: BEL Endpoints
+### Phase 14.10 — API: BEL Endpoints
 
 - [ ] `POST /bel/validate` — body: `{ "expression": "...", "context": "filter" | "formula", "schema": { ... } }` → returns `{ "valid": true }` or `{ "errors": [{ "message": "...", "span": { "start": 0, "end": 5 } }] }`
-- [ ] `POST /bel/explain` — returns a human-readable description of what an expression does (for UI tooltip)
-- [ ] `POST /bel/autocomplete` — body: `{ "expression": "...", "cursor": 12, "schema": { ... } }` → returns completions at cursor position (property names, function names, enum option values)
-- [ ] Database view filter `POST /databases/:id/views` now accepts `filter_expression: String` (BEL) alongside the legacy JSON filter config — both are supported during migration
+- [ ] `POST /bel/explain` — returns a human-readable description of the expression (for UI tooltip)
+- [ ] `POST /bel/autocomplete` — body: `{ "expression": "...", "cursor": 12, "schema": { ... } }` → completions at cursor position (property names, function names, enum option values)
+- [ ] Database view filter `POST /databases/:id/views` now accepts `filter_expression: String` (BEL) alongside the legacy JSON filter config
 
-### Phase 25.8 — Automation Rules (Trigger-Action)
+### Phase 14.11 — Automation Rules (Trigger-Action)
 
 > **DSA:** Event pattern matching — the trigger condition is a BEL expression evaluated against before/after row snapshots
 
@@ -935,11 +987,14 @@ Interpreter          SQL              WASM        Search
 | BEL filter parser | Recursive descent (statements) + Pratt parser (infix precedence climbing) | `libs/bel` | 14.2 |
 | BEL AST | Recursive enum + `Box<Expr>` — self-referential algebraic data type in Rust | `libs/bel` | 14.2 |
 | BEL type checker | Post-order AST traversal + type constraint propagation + unification | `libs/bel` | 14.3 |
-| SQL transpiler | Tree transformation via structural pattern matching (AST → target IR) | `libs/bel` | 14.4 |
-| Formula interpreter | Tree-walking interpreter — recursive evaluation with short-circuit semantics | `libs/bel` | 14.5 |
-| WASM formula evaluator | `wasm32` feature gating — same crate compiles to server and browser | `libs/bel` | 14.6 |
-| BEL autocomplete | Trie over property/function names + cursor position tracking in the token stream | `bel-service` | 14.7 |
-| Automation rules engine | Decision tree discrimination — skip unmatched rules without full evaluation | `bel-service` | 14.8 |
+| BEL value repr | NaN-boxing — all values in one `u64`; `GcPtr` encoded in NaN payload bits | `libs/bel` | 14.4 |
+| BEL GC | Tri-color mark-and-sweep; write barrier; stop-the-world sweep; `GcHeap` arena | `libs/bel` | 14.5 |
+| BEL bytecode compiler | `TypedExpr` → `Chunk { constants, Vec<Op> }`; typed opcodes; constant folding; jump fixup | `libs/bel` | 14.6 |
+| BEL VM | Stack machine; typed opcode dispatch; GC-integrated allocation sites | `libs/bel` | 14.7 |
+| SQL transpiler | Tree transformation via structural pattern matching (AST → parameterized WHERE) | `libs/bel` | 14.8 |
+| WASM evaluator | Same VM compiled to `wasm32`; GC heap works in WASM via `alloc` | `libs/bel` | 14.9 |
+| BEL autocomplete | Trie over property/function names + cursor position tracking | `bel-service` | 14.10 |
+| Automation rules engine | Decision tree discrimination — skip unmatched rules without full evaluation | `bel-service` | 14.11 |
 
 ### Greedy
 

@@ -1,7 +1,7 @@
 # BitTree — Learning Roadmap
 
 > Each phase is a learning sprint.
-> 
+>
 > **Architecture:** BitTree is a **Full Microservices** system — one Rust binary per service, independently deployable, each with its own PostgreSQL schema. Services communicate asynchronously via NATS JetStream and synchronously via gRPC for selected high-frequency pairs (see ADR-003). The goal is not just to build features — it is to *encounter* and *internalise* specific Rust and system design concepts through real problems.
 
 ---
@@ -37,9 +37,12 @@
 | **Recursive enum / ADT** | `Expr` and `TypedExpr` — self-referential algebraic data type via `Box<Expr>` | 14.2 |
 | **Post-order AST traversal** | BEL type checker — infer and propagate types bottom-up | 14.3 |
 | **Type constraint propagation** | Unify `if(cond, then, else)` branches; resolve `prop()` types from schema | 14.3 |
-| **Tree transformation (transpiler)** | SQL transpiler — structural pattern matching on typed AST → WHERE clause | 14.4 |
-| **Tree-walking interpreter** | Formula evaluator — recursive eval with short-circuit semantics | 14.5 |
-| **Decision tree / discrimination tree** | Automation rules engine — skip unmatched rules without full evaluation | 14.8 |
+| **NaN-boxing / tagged value repr** | `GcValue` — all VM values fit in one `u64`; inline scalars, `GcPtr` for heap objects | 14.4 |
+| **Tri-color mark-and-sweep GC** | `GcHeap` — heap-allocates `String` and `List` values; write barrier; stop-the-world sweep | 14.5 |
+| **Bytecode compiler** | `TypedExpr` → `Chunk { constants, code: Vec<Op> }` — type-specialized opcodes, jump fixup | 14.6 |
+| **Stack machine VM** | Execute typed bytecode using GC-managed heap — `ADD_NUM`, `CONCAT_STR`, `CALL_BUILTIN` | 14.7 |
+| **Tree transformation (transpiler)** | SQL transpiler — structural pattern matching on typed AST → WHERE clause | 14.8 |
+| **Decision tree / discrimination tree** | Automation rules engine — skip unmatched rules without full evaluation | 14.11 |
 
 ### Trees
 
@@ -51,6 +54,7 @@
 | **Trie** | Autocomplete on page titles and `@mention` lookup in search | 7 |
 | **Segment tree** | Range queries on analytics events (sum edits in date range) | 18, 22 |
 | **Fenwick tree (BIT)** | Prefix sum of block counts or view counts | 22 |
+| **Interval tree** | Calendar view — O(log n + k) date-range overlap queries | 12 |
 | **B-tree (conceptual)** | Understand PostgreSQL's on-disk B-tree index structure (used for all standard indexes) | 0 |
 | **AVL / Red-Black (conceptual)** | Understand Tantivy's term index and sorted sets in Redis | 7 |
 | **Rope** | Efficient string editing in CRDT text sync | 4 |
@@ -61,11 +65,11 @@
 |---|---|---|
 | **Graph DFS / BFS** | Traverse backlink graph; find all pages reachable from a given page | 8 |
 | **Cycle detection** | Detect circular page references (page A links to B links to A) | 8 |
-| **Topological sort** | Order saga steps by dependency; order ETL pipeline stages | 22, 18 |
+| **Topological sort** | Order saga steps by dependency; order ETL pipeline stages; rollup resolution order | 13, 18, 22 |
 | **Shortest path (Dijkstra / BFS)** | "How many hops between page X and page Y?" — link distance feature | 8 |
 | **Strongly connected components** | Detect clusters of heavily interlinked pages (knowledge clusters) | 8 |
 | **Consistent hashing ring** | Distribute WebSocket sessions across collaboration-service instances | 20 |
-| **Union-Find (Disjoint Set)** | Group collaboration sessions; detect isolated workspace subgraphs | 20 |
+| **Union-Find (Disjoint Set)** | Page connectivity queries — are A and B reachable from each other? | 8 |
 
 ### Dynamic Programming
 
@@ -77,6 +81,7 @@
 | **Knapsack (0-1)** | Optimal ETL batch scheduling: maximise processed events within memory budget | 18 |
 | **Interval DP** | Optimal fractional index rebalancing: find the minimum re-keying operations | 1 |
 | **Memoised tree traversal** | Cache subtree render results in Leptos for large block trees | 19 |
+| **Memoised DAG reduce** | Rollup formula evaluation over cross-database relation chains | 13 |
 
 ### Backtracking
 
@@ -98,6 +103,7 @@
 | **Greedy graph colouring** | Assign unique presence colours to collaborators on a page | 4 |
 | **Token bucket / leaky bucket** | Rate limiting in API gateway — implement both and compare | 17 |
 | **Exponential backoff with jitter** | Webhook retry scheduling — prove why pure exponential causes retry storms | 21 |
+| **Sweep line** | Calendar conflict detection — sweep across sorted date intervals | 12 |
 
 ### Hash-Based Structures
 
@@ -206,11 +212,19 @@
 
 
 ---
-
-## Phase 0 — Foundation
+0 — Foundation
 
 ### What You're Building
 Workspace scaffold, `libs/infra` (runtime infrastructure) and `libs/domain` (domain primitives), local dev stack, CI.
+
+### 🎓 Prerequisite Study (Complete *before* coding this phase)
+- **DDIA:** Read Chapters 1–3 (Foundations).
+- **MIT 6.824:** Watch Lecture 3 (GFS) and MapReduce.
+- **Gossip Glomers:** Complete Challenges 1 & 2 (Echo & Unique ID) in Rust.
+- **CMU 15-445 (Andy Pavlo):** Watch B+Tree and Concurrency Control lectures to understand PostgreSQL internals.
+- **Jon Gjengset:** Watch "Crust of Rust: Lifetime Annotations" (essential for tree data structures).
+- **Paper:** *The Log: What every software engineer should know about real-time data's unifying abstraction* (Jay Kreps).
+- **Paper:** *The Google File System* (Ghemawat et al.) — understand distributed storage fundamentals before standing up MinIO.
 
 ### Workspace Crate Layout
 ```
@@ -231,14 +245,14 @@ services/…       one binary crate per microservice
 | `libs/test-utils` crate created | ✅ Done |
 | `libs/proto` crate created | ✅ Done |
 | `infra::telemetry` — `get_subscriber` + `init_subscriber` (bunyan JSON) | ✅ Done |
-| `infra::error` — `AppError` + `ApiError` with `From` + `IntoResponse` | ✅ Done |
-| `infra::config` — generic `get_configuration::<T>()` + `Settings` struct | ✅ Done |
+| `infra::error` — `AppError` (internal error type, `thiserror`) | ✅ Done |
+| `infra::config` — generic `get_configuration::<T>()` | ✅ Done |
 | `infra::macros` — `define_id!` newtype macro (`paste`) | ✅ Done |
 | `docker-compose.yml` — PostgreSQL, Redis, NATS, MinIO | ✅ Done |
 | `infra/init-db.sql` — initial schema bootstrap | 🔄 In progress |
 | Domain ID newtypes in `libs/domain` | ⬜ Todo |
 | `libs/test-utils` — `TestContext` + testcontainers setup | ⬜ Todo |
-| `services/auth-service` skeleton (health endpoint) | ⬜ Todo |
+| `services/document-service` skeleton (health endpoint) | ⬜ Todo |
 | CI — `cargo fmt --check` + `cargo clippy` + `cargo test` | ⬜ Todo |
 | Git hooks — pre-commit fmt + clippy | ⬜ Todo |
 
@@ -249,8 +263,7 @@ services/…       one binary crate per microservice
 | Feature flags (`cfg(feature)`) | Compile-time backend selection; `wasm32` gating in `libs/domain` and `libs/bel` |
 | `tracing` + `tracing-subscriber` + `tracing-bunyan-formatter` | `infra::telemetry` — `get_subscriber` / `init_subscriber` |
 | `config` crate + `serde` + 12-factor env override | `infra::config::get_configuration::<T>()` |
-| `thiserror` / `axum::IntoResponse` | `infra::error` — `AppError` (internal) + `ApiError` (HTTP boundary) |
-| `From<AppError> for ApiError` | One-way conversion: internal errors map to opaque HTTP responses |
+| `thiserror` | `infra::error` — `AppError` (internal error type only; HTTP boundary lives in each service) |
 | Newtype pattern + `paste` macro | `define_id!` in `infra::macros` — generates `UserId`, `PageId`, etc. |
 | `#[sqlx::test]` macro | Creates a real Postgres DB per test, tears it down after |
 
@@ -275,6 +288,13 @@ services/…       one binary crate per microservice
 ### What You're Building
 The core: recursive block tree, CRUD, versioning.
 
+### 🎓 Prerequisite Study (Complete *before* coding this phase)
+- **DDIA:** Read Chapter 2 (Data Models) — adjacency list vs nested sets vs LTREE; understand why you're choosing LTREE for the block tree.
+- **Zero To Production Ch. 3–5:** sqlx migrations, `#[sqlx::test]`, connection pooling — essential before writing any database queries.
+- **Jon Gjengset:** Watch "Crust of Rust: Iterators" — required before implementing iterative DFS/BFS tree traversal without recursion.
+- **Figma Blog:** [Realtime Editing of Ordered Sequences](https://www.figma.com/blog/realtime-editing-of-ordered-sequences/) — fractional indexing explained; read before implementing block ordering.
+- **Paper:** *An O(ND) Difference Algorithm and Its Variations* (Myers, 1986) — the exact algorithm powering the snapshot diff viewer in this phase.
+
 ### Rust Concepts
 | Concept | Where It Appears |
 |---|---|
@@ -297,6 +317,7 @@ The core: recursive block tree, CRUD, versioning.
 ### Data Structures & Algorithms
 - Tree traversal (DFS, BFS) — implementing without `Box` recursion
 - Position encoding for ordered siblings (fractional indexing)
+- Myers diff — edit distance between two block tree snapshots
 
 ---
 
@@ -307,6 +328,11 @@ The core: recursive block tree, CRUD, versioning.
 
 ### What You're Building
 Stateless JWT auth, refresh token rotation, OAuth2 login.
+
+### 🎓 Prerequisite Study (Complete *before* coding this phase)
+- **Jon Gjengset:** Watch "Crust of Rust: Smart Pointers and Interior Mutability" (crucial for sharing state in Axum extractors).
+- **Paper:** *Macaroons: Cookies with Contextual Caveats for Decentralized Authorization in the Cloud* (Birgisson et al.) — understand capability-based tokens before reaching for JWT.
+- **Paper:** *OAuth 2.0 Security Best Current Practice* (IETF RFC 9700, 2023) — mandatory reading before implementing the PKCE flow; covers token leakage, redirect URI validation, and PKCE requirements.
 
 ### Rust Concepts
 | Concept | Where It Appears |
@@ -333,13 +359,17 @@ Stateless JWT auth, refresh token rotation, OAuth2 login.
 
 ---
 
-
 ---
 
 ## Phase 3 — User & Workspace Service
 
 ### What You're Building
 User profiles, workspace creation, membership, RBAC.
+
+### 🎓 Prerequisite Study (Complete *before* coding this phase)
+- **Paper:** *Role-Based Access Controls* (Ferraiolo & Kuhn, NIST, 1992) — the original RBAC model; read before designing the `roles` table so you understand Owner/Admin/Editor/Viewer semantically, not just as enum variants.
+- **OWASP:** [Authentication Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html) — covers invitation token security (crypto-random, single-use, expiry) and session management.
+- **Zero To Production Ch. 6–8:** middleware, error handling in Axum — relevant before wiring up membership guards.
 
 ### Rust Concepts
 | Concept | Where It Appears |
@@ -366,6 +396,15 @@ User profiles, workspace creation, membership, RBAC.
 
 ### What You're Building
 Real-time WebSocket sessions, cursor presence, CRDT-based text sync.
+
+### 🎓 Prerequisite Study (Complete *before* coding this phase)
+- **Tokio Tutorial:** Complete the official `mini-redis` tutorial to master `tokio::spawn`, `select!`, and TCP framing before attempting WebSockets.
+- **DDIA:** Read Chapter 7 (Transactions).
+- **Martin Kleppmann:** Watch his Cambridge University lecture on CRDTs (YouTube).
+- **Gossip Glomers:** Complete Challenge 4 (Grow-Only Counter / CRDT).
+- **Paper:** *Time, Clocks, and the Ordering of Events in a Distributed System* (Leslie Lamport, 1978).
+- **Paper:** *Conflict-Free Replicated Data Types* (Shapiro et al., 2011).
+- **Paper:** *A Conflict-Free Replicated JSON Datatype* (Kleppmann & Beresford, 2017) — closest to BitTree's rich-text block structure; more concrete than the general CRDT survey above.
 
 ### Rust Concepts
 | Concept | Where It Appears |
@@ -422,13 +461,18 @@ Persist in-flight ops to a binary WAL file before acknowledging to the client �
 
 ---
 
-
 ---
 
 ## Phase 5 — Dockerize & Deploy v1
 
 ### What You're Building
-Containerize the monolith, set up CI/CD, ship it.
+Containerize the services, set up CI/CD, ship it.
+
+### 🎓 Prerequisite Study (Complete *before* coding this phase)
+- **[`cargo-chef` README](https://github.com/LukeMathWalker/cargo-chef)** — Rust-specific Docker layer caching; without it your CI builds recompile all dependencies on every push.
+- **Docker Docs:** [Multi-stage builds](https://docs.docker.com/build/building/multi-stage/) — understand build-stage vs runtime-stage before writing the Dockerfile.
+- **[The Twelve-Factor App](https://12factor.net/)** — read all 12 factors; the config (III) and build/release/run (V) factors are directly applicable to this phase.
+- **GitHub Actions Docs:** [Building and testing Rust](https://docs.github.com/en/actions/use-cases-and-examples/building-and-testing/building-and-testing-rust) — reference before writing the CI workflow.
 
 ### Concepts
 | Concept | Where It Appears |
@@ -445,6 +489,10 @@ Containerize the monolith, set up CI/CD, ship it.
 
 ### What You're Building
 Presigned upload URLs, file metadata, image pipelines.
+
+### 🎓 Prerequisite Study (Complete *before* coding this phase)
+- **PingCAP Talent Plan:** Complete the `kvs` (Key-Value Store) project in Rust. It teaches you how to build a networked storage engine from scratch and is the ultimate prep for this phase.
+- **Paper:** *The Google File System* (Ghemawat et al.) — already read in Phase 0; revisit the section on chunk servers and write-once semantics before designing the upload pipeline.
 
 ### Rust Concepts
 | Concept | Where It Appears |
@@ -470,6 +518,10 @@ Presigned upload URLs, file metadata, image pipelines.
 ### What You're Building
 Full-text search with Tantivy, event-driven index updates.
 
+### 🎓 Prerequisite Study (Complete *before* coding this phase)
+- **Jon Gjengset:** Watch "Crust of Rust: Channels" to understand how to safely pass indexing tasks to worker threads.
+- **Paper:** *The Anatomy of a Large-Scale Hypertextual Web Search Engine* (Brin & Page, 1998) — understand inverted indexes, TF-IDF, and BM25 scoring before calling `searcher.search()`; Tantivy implements these algorithms.
+
 ### Rust Concepts
 | Concept | Where It Appears |
 |---|---|
@@ -490,10 +542,51 @@ Full-text search with Tantivy, event-driven index updates.
 
 ---
 
-## Phase 8 — Page-Level Permissions & Access Control
+## Phase 8 — Comments & Inline Discussions
+
+### What You're Building
+Block-level comment threads, `@mention` notifications, `[[page]]` backlink syntax, the bidirectional reference graph, and the anti-entropy reconciliation job that repairs it after network partitions.
+
+### 🎓 Prerequisite Study (Complete *before* coding this phase)
+- **DDIA:** Read Chapter 5 (Replication) — specifically the sections on anti-entropy, read repair, and eventual consistency; the backlink index is deliberately AP and needs a reconciliation strategy.
+- **Paper:** *Epidemic Algorithms for Replicated Database Maintenance* (Demers et al., 1987) — the theoretical basis for anti-entropy; gossip-based reconciliation is the same pattern the nightly backlink reconciliation job uses.
+- **CP-Algorithms:** [Disjoint Set Union](https://cp-algorithms.com/data_structures/disjoint_set_union.html) — Union-Find with path compression and union-by-rank; required before implementing the page connectivity queries (`GET /pages/connected`).
+- **CP-Algorithms:** [Strongly Connected Components](https://cp-algorithms.com/graph/strongly-connected-components.html) — Tarjan's and Kosaraju's algorithms; required before building the knowledge cluster feature.
+
+### Rust Concepts
+| Concept | Where It Appears |
+|---|---|
+| Recursive `Box<T>` for comment trees | `Comment { replies: Vec<Comment> }` — self-referential via `Vec` |
+| `HashSet` dedup | Backlink deduplication — a page linked from N blocks counts once |
+| Graph algorithms on adjacency table | BFS/DFS on `block_references` join table |
+| NATS async event fan-out | `BacklinkCreated` events trigger async index update |
+| Union-Find (`petgraph` or hand-rolled) | Page connectivity queries — `FIND(a) == FIND(b)` |
+
+### System Design Concepts
+- Reverse index via explicit `block_references` adjacency table
+- Eventual consistency for the backlink index — AP design, updates trail writes
+- Anti-entropy: nightly reconciliation scan re-derives truth from block content
+- Notification fan-out on `@mention` — pub/sub vs direct delivery
+
+### Data Structures & Algorithms
+- Graph DFS/BFS on `block_references` adjacency list
+- Cycle detection (DFS + colour marking) for circular page references
+- Strongly connected components (Tarjan's / Kosaraju's) for knowledge clusters
+- Union-Find (path compression + union-by-rank) for O(α) page connectivity queries
+
+---
+
+
+---
+
+## Phase 9 — Page-Level Permissions & Access Control
 
 ### What You're Building
 Per-page permission overrides, guest access, page locking, favorites and recents.
+
+### 🎓 Prerequisite Study (Complete *before* coding this phase)
+- **OWASP:** [Access Control Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Access_Control_Cheat_Sheet.html) — covers least privilege, permission escalation prevention, and the difference between authentication and authorisation.
+- **Paper:** *Protection in Operating Systems* (Lampson, 1974) — the original access matrix / capability model; read before designing the permission resolution order (`page-level → workspace-role → deny`).
 
 ### Rust Concepts
 | Concept | Where It Appears |
@@ -520,10 +613,14 @@ Per-page permission overrides, guest access, page locking, favorites and recents
 
 ---
 
-## Phase 9 — Notification Service
+## Phase 10 — Notification Service
 
 ### What You're Building
 In-app notifications, real-time delivery via WebSocket.
+
+### 🎓 Prerequisite Study (Complete *before* coding this phase)
+- **Gossip Glomers:** Complete Challenge 3 (Broadcast) in Rust to master network partition tolerance.
+- **Paper:** *Epidemic Algorithms for Replicated Database Maintenance* (Demers et al.) — already read in Phase 8; revisit the fan-out section before designing notification delivery.
 
 ### Rust Concepts
 | Concept | Where It Appears |
@@ -542,10 +639,15 @@ In-app notifications, real-time delivery via WebSocket.
 
 ---
 
-## Phase 10 — Observability & Monitoring
+## Phase 11 — Observability & Monitoring
 
 ### What You're Building
-Production telemetry: traces, metrics, dashboards.
+Production telemetry: distributed traces, metrics scraping, RED method dashboards, SLI/SLO definitions.
+
+### 🎓 Prerequisite Study (Complete *before* coding this phase)
+- **Google SRE Book:** Read [Chapter 6 — Monitoring Distributed Systems](https://sre.google/sre-book/monitoring-distributed-systems/) — the four golden signals (latency, traffic, errors, saturation) and the difference between SLI, SLO, and SLA.
+- **OpenTelemetry:** Read [Concepts](https://opentelemetry.io/docs/concepts/) — traces, spans, context propagation, and the OTel data model before wiring `tracing` to Jaeger.
+- **[The Rust Performance Book](https://nnethercote.github.io/perf-book/)** — covers `cargo-flamegraph`, `perf`, `criterion`, and `tokio-console`; you will need all of these to produce meaningful performance data for the dashboards.
 
 ### Concepts
 | Concept | Where It Appears |
@@ -557,108 +659,320 @@ Production telemetry: traces, metrics, dashboards.
 
 ---
 
-## Phase 11 — BitTree Expression Language (BEL)
+
+---
+
+## Phase 12 — Database Views (Kanban, Calendar, Table, Gallery)
 
 ### What You're Building
-A small, safe, statically-typed expression language embedded in BitTree. One parser, four evaluation backends: SQL filter transpiler, tree-walking formula interpreter, WASM client-side evaluator, and a search query parser. Powers database view filters, formula properties, automation trigger conditions, and structured search.
+Four projections of the same database block rows: Table, Board/Kanban, Calendar, Gallery. Calendar view uses an interval tree for date-range overlap queries; sweep line for conflict detection.
+
+### 🎓 Prerequisite Study (Complete *before* coding this phase)
+- **Martin Fowler:** [CQRS](https://martinfowler.com/bliki/CQRS.html) — understand command/query separation before designing view projections; each view is a different read model over the same write model.
+- **DDIA:** Read Chapter 12 (The Future of Data Systems) — derived data, materialized views, and the relationship between CQRS and event-sourced projections.
+- **CLRS Ch. 14:** Augmenting Data Structures — the interval tree section; required before implementing the Calendar view's O(log n + k) overlap query.
+- **CP-Algorithms:** [Segment Tree](https://cp-algorithms.com/data_structures/segment_tree.html) — the augmented BST used for interval overlap queries.
+
+### Rust Concepts
+| Concept | Where It Appears |
+|---|---|
+| Trait objects for view renderers | `Box<dyn ViewRenderer>` — swap Table/Board/Calendar/Gallery at runtime |
+| `HashMap`-based groupings | Kanban columns — group rows by `select` property value |
+| CQRS projections | View config = query spec stored as JSONB; DB rows = write model |
+| `serde` for view config evolution | Deserialise stored filter/sort config across schema versions |
+
+### System Design Concepts
+- CQRS — separate read model per view type; rebuild projections from events
+- Materialized views for derived data (formula columns, rollup previews)
+- Formula evaluation at query time — never store stale computed values
+
+### Data Structures & Algorithms
+- Interval tree — O(log n + k) overlap query for Calendar date-range queries
+- Sweep line for conflict detection (overlapping date intervals in Calendar)
+- Sorting by arbitrary property types (multi-key comparators)
+
+---
+
+
+---
+
+## Phase 13 — Database Relations & Rollups
+
+### What You're Building
+`relation` and `rollup` property types, bidirectional cross-database links, linked database views embedded in pages, formula evaluation across related records.
+
+### 🎓 Prerequisite Study (Complete *before* coding this phase)
+- **GitHub:** [graphql/dataloader](https://github.com/graphql/dataloader) — the DataLoader pattern (batch + deduplicate within a request window); the fix for the N+1 problem you will hit immediately when loading related rows.
+- **DDIA:** Read Chapter 2 (Data Models) — the joins and relationships section; understand why the relational model handles this and how to replicate it in a document-adjacent schema.
+- **Paper:** *A Note on Distributed Computing* (Waldo et al., 1994) — why distributed object transparency fails; directly relevant before designing cross-database relation resolution where rows may live in different services.
+
+### Rust Concepts
+| Concept | Where It Appears |
+|---|---|
+| `Arc<dyn Trait>` resolvers | Multi-database row fetches — one resolver per target database |
+| `futures::join_all` | Parallel fetching of related rows within one request |
+| Recursive resolution with depth bound | Relation chains A → B → C — bound at 5 levels to prevent cycles |
+| `HashMap` memoisation | Cache already-resolved rows within a single request to avoid re-fetching |
+
+### System Design Concepts
+- N+1 query problem and the DataLoader batching solution
+- Bidirectional reference integrity — `RowDeleted` NATS event propagates to all referencing databases
+- Lazy vs eager relation loading trade-offs (render time vs query count)
+- Rollup computed at query time — never stored, always fresh
+
+### Data Structures & Algorithms
+- DAG traversal with cycle detection and depth bound (relation chain resolution)
+- Topological sort for ordering rollup resolution steps across chained relations
+- Memoised DAG reduce — cache subtree values during rollup aggregation
+
+---
+
+
+---
+
+## Extended Phases (14–22)
+
+| Phase | Feature | Primary Learning |
+|---|---|---|
+| 14 | BEL Expression Language | Compiler: lexer → parser → type checker → eval |
+| 15 | Undo / Redo & History | Command pattern, CRDT undo, monotonic stack |
+| 16 | ☁️ Kubernetes & IaC | K8s, HPA, Pulumi Rust SDK, GitOps |
+| 17 | API Gateway & Rate Limiting | Tower Service, token/leaky/sliding window |
+| 18 | Analytics & ETL | SIMD aggregation, leader election, fencing tokens |
+| 19 | Frontend (Leptos) | Reactive signals, WASM, shared types |
+| 20 | ☁️ Microservice Extraction | Consistent hashing, session routing |
+| 21 | Webhooks & Audit Log | Outbox pattern, append-only log |
+| 22 | Templates, Publishing, Import/Export | Deep clone, CDN, `nom`, HyperLogLog |
+
+---
+
+
+---
+
+## Phase 14 — BitTree Expression Language (BEL)
+
+### What You're Building
+A strongly-typed, VM-based expression language with a mark-and-sweep garbage collector. BEL compiles source text all the way to typed bytecode and executes it on a stack machine. Heap-allocated values (`String`, `List`) are managed by a tri-color GC. One pipeline, three backends: VM execution (primary), SQL filter transpiler, and WASM (same VM compiled to `wasm32`). Powers database view filters, formula properties, automation trigger conditions, and inline formula evaluation in the browser.
+
+### 🎓 Prerequisite Study (Complete *before* coding this phase)
+- **Crafting Interpreters (Robert Nystrom):** Read **all three parts** — free at [craftinginterpreters.com](https://craftinginterpreters.com/). Part I (scanning/parsing), Part II (tree-walk, skimmed), Part III (bytecode VM + GC) is the primary reference for this phase.
+- **Crafting Interpreters Ch. 26 — Garbage Collection:** The clox mark-and-sweep GC is the direct model for BEL's GC; work through it before writing a single line of `GcHeap`.
+- **Amos (fasterthanli.me):** Read his deep-dive on Rust Macros if you plan to use `logos`/`nom`.
+- **Paper:** *A Unified Theory of Garbage Collection* (Bacon, Cheng & Rajan, 2004) — proves that tracing GC and reference counting are mathematical duals; read before choosing an algorithm so you understand the design space.
+- **Paper:** *A Theory of Type Polymorphism in Programming* (Milner, 1978) — Hindley-Milner type inference; read after building the type checker to understand the theoretical framework you're approximating.
+- **Paper:** *Simple Generational Garbage Collection and Fast Allocation* (Appel, 1989) — optional; read after Phase 14.5 to understand why generational collection is the obvious next step.
+
+### Compiler Pipeline
+```
+Source string (UTF-8)
+    ↓ Lexer (FSM)                    → Vec<Token>                    [14.1]
+    ↓ Parser (R.D. + Pratt)          → Expr (recursive enum)         [14.2]
+    ↓ Type Checker (post-order walk) → TypedExpr (every node typed)  [14.3]
+    ↓
+    ├─ Bytecode Compiler             → Chunk { constants, Vec<Op> }  [14.6]
+    │   ↓
+    │  VM + GC Heap                  → GcValue (primary eval path)   [14.7]
+    │   ↓
+    │  WASM target                   → same VM to wasm32             [14.9]
+    │
+    └─ SQL Transpiler                → (WHERE fragment, bound params) [14.8]
+```
+
+### Instruction Set (typed — no runtime type dispatch)
+```
+// Scalars (inline, no allocation)
+Nil, True, False, Const(u16)      // push constants[idx]
+
+// Arithmetic — type resolved at compile time
+AddNum, SubNum, MulNum, DivNum, NegNum
+ConcatStr                          // allocates GcString on heap → triggers GC if needed
+
+// Comparisons — type-specialized variants emitted by compiler
+EqNum, EqStr, EqBool,  NeNum, NeStr
+LtNum, LteNum, GtNum, GteNum
+LtDate, LteDate, GtDate, GteDate
+
+// Logic
+Not, And, Or                       // And/Or emit JumpIfFalse for short-circuit
+
+// Control flow
+Jump(i16), JumpIfFalse(i16), JumpIfNull(i16)   // relative offsets; patched at compile time
+
+// Data
+LoadProp(u16)                      // push row.properties[name] — name interned in constants
+CallBuiltin(u8, u8)                // builtin_id + arity; resolved at compile time, no dynamic dispatch
+
+Pop, Return
+```
+
+### Value Representation & GC
+
+**Phase 14.4 — Value Representation:**
+Represent all VM values in a single `u64` using NaN-boxing. IEEE 754 quiet NaNs have 51 bits of payload — enough to encode every non-`f64` value type without an extra tag word.
+
+```
+f64 (number)   → stored as-is when not NaN
+Null           → 0x7FFC_0000_0000_0000
+Bool(false)    → 0x7FFC_0000_0000_0001
+Bool(true)     → 0x7FFC_0000_0000_0002
+GcPtr(u32)     → 0x7FFE_0000_PPPP_PPPP   (lower 32 bits = index into GcHeap)
+```
+
+- All values fit in a register — the VM value stack is `Vec<u64>`, not `Vec<Box<dyn Any>>`
+- `GcPtr` is a 32-bit index into `GcHeap`, not a raw pointer — safe to move during compaction
+
+**Phase 14.5 — Tri-Color Mark-and-Sweep GC:**
+```
+GcHeap {
+    objects: Vec<GcObject>,   // the heap
+    free_list: Vec<u32>,      // recycled slots
+    bytes_allocated: usize,
+    gc_threshold: usize,      // trigger at 2× last collection size
+}
+
+GcObject { header: GcHeader, value: GcPayload }
+GcHeader { color: Color, ... }   // White | Gray | Black
+GcPayload { String(String) | List(Vec<GcValue>) }
+```
+
+- **Roots:** the VM's value stack + any live `GcPtr`s in the constants table
+- **Mark:** start from roots; push to gray worklist; pop gray → trace children → mark black
+- **Write barrier:** when a black object stores a white pointer, re-gray the black object (prevents the tri-color invariant from being violated during incremental phases)
+- **Sweep:** iterate `objects`; reclaim `White` slots back to `free_list`; reset survivors to `White`
+- **Trigger:** `bytes_allocated > gc_threshold` — checked after every `ConcatStr` / `BuildList` instruction
+
+**Key invariant:** *No black object holds a reference to a white object.* The write barrier enforces this.
 
 ### Rust Concepts
 | Concept | Where It Appears |
 |---|---|
 | Recursive enums + `Box<T>` | `Expr` and `TypedExpr` AST nodes |
-| Pattern matching on enum variants | Every pass of the compiler pipeline |
-| `thiserror` with source spans | `LexError`, `ParseError`, `TypeError`, `EvalError` all carry `Span { start, end }` |
-| `Display` for pretty-printing | Error messages with source highlights |
-| `From`/`Into` for IR lowering | `Expr` → `TypedExpr` during type checking |
-| `wasm32`-compatible crate | `libs/bel` compiles to both native and WASM; no I/O or threads |
-| `Iterator` on lexer | `Lexer` implements `Iterator<Item = Result<Token, LexError>>` |
-| Newtype for `Span` | `Span { start: usize, end: usize }` on every token and AST node |
-| `Vec<Instruction>` as instruction tape, `#[repr(u8)]` opcode | Bytecode VM — flat instruction array replaces recursive `TypedExpr` eval; `#[cold]` for error dispatch |
-
-### Compiler Pipeline
-```
-Source string
-    ↓ Lexer (finite automaton)       → Vec<Token>
-    ↓ Parser (recursive descent      → Expr (recursive enum, Box<Expr>)
-             + Pratt for precedence)
-    ↓ Type Checker (post-order walk) → TypedExpr (every node annotated)
-    ↓
-    ├─ SQL Transpiler                → (WHERE fragment, bound params)
-    ├─ Tree-Walking Interpreter      → Value (formula eval on a database row)
-    ├─ WASM Evaluator                → same interpreter, compiled to wasm32
-    └─ Search Query Parser           → structured search spec
-```
+| Pattern matching | Every compiler pass |
+| `thiserror` with source spans | `LexError`, `ParseError`, `TypeError` all carry `Span { start, end }` |
+| `#[repr(u8)]` opcode enum | `Op` — flat bytecode array; `#[cold]` on error dispatch |
+| `u64` NaN-boxing | `GcValue` — entire value stack is `Vec<u64>`; no heap allocation per value |
+| `unsafe` pointer provenance | NaN-boxing tag extraction — transmute `u64` ↔ `f64`; encapsulate in safe `GcValue` API |
+| `Vec<GcObject>` as arena | `GcHeap` — index-stable slot array; `free_list: Vec<u32>` for recycling |
+| `wasm32`-compatible crate | `libs/bel` compiles to both native and WASM; GC works in WASM (no threads needed) |
 
 ### DSA Concepts
 | Concept | Where It Appears |
 |---|---|
-| Finite automaton | Lexer state machine — each character transitions state |
-| Recursive descent | Statement-level parser (`parse_filter`, `parse_formula`) |
-| Pratt parsing (precedence climbing) | Infix expression parser — binding power table |
-| Post-order AST traversal | Type checker walks bottom-up, infers types |
-| Type constraint propagation | `if(cond, then, else)` branch unification |
-| Tree transformation | SQL transpiler — AST → target IR via structural pattern matching |
-| Tree-walking interpreter | Formula evaluator with short-circuit semantics |
-| Decision tree | Automation rules engine — skip unmatched rules fast |
-| Bytecode compiler + stack VM | Compile `TypedExpr` → flat `Vec<Instruction>`; stack machine eval; constant folding; jump fixup |
+| Finite automaton | Lexer — each byte transitions state |
+| Recursive descent + Pratt | Parser — statements + infix precedence table |
+| Post-order AST traversal | Type checker walks `Expr` bottom-up |
+| Type constraint propagation | `if(cond, then, else)` branch unification; `prop()` type from schema |
+| NaN-boxing | Value representation — all values in one `u64` |
+| Tri-color mark-and-sweep | GC — white/gray/black invariant, write barrier, sweep |
+| Bytecode compiler | `TypedExpr` → `Chunk`; jump offsets patched in two passes |
+| Stack machine | VM — push/pop operands, typed opcodes, no dynamic dispatch |
+| Tree transformation | SQL transpiler — pattern match `TypedExpr` → parameterized WHERE |
+| Decision tree | Automation rules engine — skip unmatched rules without full evaluation |
 
 ### Sub-phases
 | Sub-phase | What You Build |
 |---|---|
-| 25.1 | `libs/bel` — Lexer (FSM, `Iterator<Token>`, spans) |
-| 25.2 | `libs/bel` — Parser & `Expr` AST (recursive descent + Pratt) |
-| 25.3 | `libs/bel` — Type Checker (`TypedExpr`, `PropertySchema`, type errors) |
-| 25.4 | `libs/bel` — SQL Transpiler (filter → parameterised WHERE clause) |
-| 25.5 | `libs/bel` — Tree-Walking Interpreter (formula eval on `DatabaseRow`) |
-| 25.6 | `libs/bel` — WASM build; export `bel_eval` callable from Leptos |
-| 25.7 | `bel-service` — REST API: `/bel/validate`, `/bel/explain`, `/bel/autocomplete` |
-| 25.8 | `bel-service` — Automation rules engine (trigger-action, decision tree) |
-| 25.9 | `libs/bel` — Bytecode VM (stack machine, constant folding, jump fixup) |
+| 14.1 | `libs/bel` — Lexer (FSM, `Iterator<Token>`, spans) |
+| 14.2 | `libs/bel` — Parser & `Expr` AST (recursive descent + Pratt) |
+| 14.3 | `libs/bel` — Type Checker (`TypedExpr`, `PropertySchema`, type errors with spans) |
+| 14.4 | `libs/bel` — Value Representation (`GcValue` NaN-boxing; benchmark vs tagged union) |
+| 14.5 | `libs/bel` — GC (`GcHeap`, tri-color mark-and-sweep, write barrier, threshold trigger) |
+| 14.6 | `libs/bel` — Bytecode Compiler (`TypedExpr` → `Chunk`; constant folding; jump fixup) |
+| 14.7 | `libs/bel` — VM (stack machine, typed dispatch, GC integration, short-circuit control flow) |
+| 14.8 | `libs/bel` — SQL Transpiler (`TypedExpr` → parameterized WHERE clause; no interpolation) |
+| 14.9 | `libs/bel` — WASM Build (`wasm32` target; export `bel_eval` callable from Leptos) |
+| 14.10 | `bel-service` — REST API: `/bel/validate`, `/bel/explain`, `/bel/autocomplete` |
+| 14.11 | `bel-service` — Automation rules engine (trigger-action, decision tree over compiled triggers) |
 
 ### Resources
 | Resource | What to Learn |
 |---|---|
-| [Crafting Interpreters](https://craftinginterpreters.com/) — Robert Nystrom | Full compiler pipeline from scanning through evaluation; free online |
+| [Crafting Interpreters](https://craftinginterpreters.com/) — Robert Nystrom | **Part III (clox)** is the primary reference — bytecode, VM, GC; free online |
 | [Pratt Parsers — Made Simple (matklad)](https://matklad.github.io/2020/04/13/simple-but-powerful-pratt-parsing.html) | The canonical Rust-flavoured Pratt explainer |
-| [logos](https://docs.rs/logos/) crate | Lexer generator — study after hand-rolling yours to understand what it generates |
-| [chumsky](https://docs.rs/chumsky/) crate | Parser combinator library — study after writing recursive descent to appreciate the abstraction |
+| *A Unified Theory of Garbage Collection* (Bacon et al., 2004) | Tracing vs reference counting as mathematical duals — read before choosing GC algorithm |
+| [logos](https://docs.rs/logos/) crate | Lexer generator — study after hand-rolling yours to see what it generates |
+| [chumsky](https://docs.rs/chumsky/) crate | Parser combinator — study after recursive descent to appreciate the abstraction |
 
 ---
 
-## Learning Objectives Summary
 
-| Domain | Key Things Learned |
+---
+
+## Phase 15 — Undo / Redo & Operation History
+
+### What You're Building
+Per-user, per-session undo/redo stack, operation collapsing (monotonic stack), server-side history log with point-in-time restore.
+
+### 🎓 Prerequisite Study (Complete *before* coding this phase)
+- **Refactoring Guru:** [Command Pattern](https://refactoring.guru/design-patterns/command) — understand how an operation becomes a first-class object that can be inverted before touching the undo stack.
+- **Jon Gjengset:** Watch "Crust of Rust: Atomics and Locks" — required before implementing the lock-free Treiber stack for the undo history.
+- **Paper:** *Undo Support in Cooperative Work* (Prakash & Knister, 1994) — why undo in a collaborative environment is fundamentally different from single-user undo; the theoretical basis for CRDT-based undo semantics.
+
+### Rust Concepts
+| Concept | Where It Appears |
 |---|---|
-| **Intermediate Rust** | Traits, generics, lifetimes, error handling, `serde`, async/await |
-| **Advanced Rust** | Unsafe, raw pointers, CRDT internals, Tower traits, PhantomData, arena allocation, `MaybeUninit`, `ManuallyDrop`, custom `GlobalAlloc` |
-| **Lock-Free & Concurrent** | `Atomic*` + memory ordering (SeqCst/AcqRel/Acquire/Release/Relaxed), CAS loops, `crossbeam` epoch reclamation, `dashmap`, Treiber stack, seqlock, lock-free queues |
-| **SIMD & Vectorisation** | `std::simd` portable SIMD, `memchr`, auto-vectorisation, AVX2 intrinsics, WASM SIMD128, checking assembly output |
-| **Cache-Conscious Design** | False sharing + `#[repr(align(64))]`, SoA vs AoS, `#[repr(C)]`, software prefetching, branch prediction hints, L1/L2/L3 cache hierarchy |
-| **Memory Allocators** | Bump/arena (`bumpalo`), `typed-arena`, `slotmap`, slab, pool, custom `GlobalAlloc` |
-| **Full-Stack Rust** | Leptos signals, server functions, WASM, `wasm32` feature gating, shared types |
-| **Microservices** | Service decomposition, NATS events, API gateway, saga, webhooks, audit log |
-| **System Design** | Caching, rate limiting, CDN, consistent hashing, circuit breakers, quotas |
-| **Distributed Systems** | CRDTs, vector clocks, saga, leader election, distributed locks + fencing tokens, gossip (conceptual), Raft (conceptual), CAP/PACELC, anti-entropy, Chandy-Lamport snapshots, two-generals problem, quorum, WAL |
-| **Security** | Argon2id, JWT RS256, OAuth2 PKCE, CSRF, timing attacks, RBAC, API keys |
-| **Cloud** | RDS PostgreSQL, S3, ElastiCache, ECS/EKS, Pulumi Rust SDK |
-| **DSA — Trees** | DFS/BFS iterative, trie (autocomplete), rope (CRDT text), segment tree, Fenwick tree, Myers diff (DP on trees) |
-| **DSA — Graphs** | Cycle detection, BFS shortest path, SCC (Tarjan's/Kosaraju's), topological sort, consistent hashing ring, union-find |
-| **DSA — DP** | Edit distance, Myers diff, LCS, 0-1 knapsack, interval DP (fractional index rebalancing), memoisation |
-| **DSA — Backtracking** | Parser combinators (`nom`), wildcard/regex matching, exhaustive path finding with pruning |
-| **Compiler / Language** | Lexer (FSM), recursive descent, Pratt parsing, AST design, type inference, tree-walking interpreter, SQL transpiler, WASM-compatible crate |
-| **DSA — Greedy** | Fractional indexing, activity selection, token/leaky bucket, greedy graph colouring, backoff with jitter |
-| **DSA — Heaps/Probabilistic** | Min/max heap, k-way merge, HyperLogLog, Bloom filter, Count-Min Sketch |
-| **DevOps** | Docker multi-stage, Kubernetes HPA, CI/CD, GitOps, observability (RED/USE) |
-| **Data Modelling** | PostgreSQL schema design, JSONB, LTREE, adjacency list for trees, recursive CTEs, LISTEN/NOTIFY, sqlx migrations |
-| **ETL** | Append-only log, Lambda/Kappa architecture, materialized views, `nom` parsers |
+| `VecDeque` for bounded history | Per-session undo ring buffer — drop oldest when depth limit reached |
+| Command pattern | Each `Op` is invertible: `insert` ↔ `delete`, `format` ↔ `unformat` |
+| Treiber stack (lock-free) | Undo/redo stack — implement from scratch with CAS before reaching for a library |
+| `ManuallyDrop<T>` | Lock-free stack node ownership transfer across threads |
+| Monotonic stack invariant | Operation collapsing — only push when new op breaks the monotone condition |
+
+### System Design Concepts
+- Client-side vs server-side undo history (who owns the stack?)
+- Per-user undo in a collaborative session — other users' ops interleave
+- Inverse operation semantics: an undo is just another op, sent to the collaboration service
+- CRDT undo: the inverse op must be valid even if concurrent ops have changed the document
+
+### Data Structures & Algorithms
+- Stack / ring buffer for bounded undo history
+- Monotonic stack — collapse adjacent compatible operations (5 char inserts → 1 word insert)
+- LCS for merge-base detection in CRDT undo (find common ancestor state)
+
+---
 
 
 ---
 
-## Phase 12 — API Gateway
+## Phase 16 — Kubernetes & Infrastructure as Code
+
+### What You're Building
+K8s manifests for all services, HPA, rolling deployments, Pulumi Rust SDK for cloud infrastructure (VPC, RDS, ElastiCache, S3, EKS), and GitHub Actions CD.
+
+### 🎓 Prerequisite Study (Complete *before* coding this phase)
+- **Kubernetes Docs:** [Concepts](https://kubernetes.io/docs/concepts/) — Pods, Deployments, Services, ConfigMaps, Secrets, HPA; read before writing a single manifest.
+- **Pulumi Rust SDK Docs:** [Get started with Pulumi and Rust](https://www.pulumi.com/docs/languages-sdk/rust/) — understand how IaC in a real programming language differs from HCL/YAML.
+- **Paper:** *Large-scale cluster management at Google with Borg* (Verma et al., 2015) — the direct predecessor to Kubernetes; read to understand *why* K8s makes the design choices it does (pods, resource requests, scheduling).
+
+### Concepts
+| Concept | Where It Appears |
+|---|---|
+| Kubernetes Deployments | One `Deployment` per service binary |
+| ConfigMaps + Secrets | 12-factor config injected into pods |
+| Horizontal Pod Autoscaler | Scale `collaboration-service` on WebSocket connection count |
+| Rolling deployment | Health check gates before traffic shifts |
+| Pulumi Rust SDK | VPC, RDS PostgreSQL, ElastiCache Redis, S3 bucket, EKS cluster |
+| GitHub Actions CD | test → build → push → `kubectl rollout` |
+
+### Cloud Concepts
+- Pets vs cattle: stateless services scale horizontally; stateful services (PostgreSQL, Redis, NATS) stay outside K8s or use StatefulSets
+- Resource requests vs limits — why setting both matters for the scheduler
+- Ingress with TLS termination (cert-manager + Let's Encrypt)
+- GitOps: the cluster state is declared in git; CI applies it
+
+---
+
+
+---
+
+## Phase 17 — API Gateway
 
 ### What You're Building
 Reverse proxy, JWT verification, rate limiting, circuit breakers.
+
+### 🎓 Prerequisite Study (Complete *before* coding this phase)
+- **CodeCrafters:** Complete "Build Your Own Redis" in Rust. Perfect prep for TCP multiplexing and rate limiting.
+- **Paper:** *Your Server as a Function* (Marius Eriksen, Twitter, 2013) — the paper that inspired Rust's `tower` ecosystem; read before touching `tower::Service`.
+- **Paper:** *Maglev: A Fast and Reliable Software Network Load Balancer* (Eisenbud et al., Google, 2016) — consistent hashing ring in a real production load balancer; directly relevant before Phase 20 session routing.
 
 ### Rust Concepts
 | Concept | Where It Appears |
@@ -680,10 +994,19 @@ Reverse proxy, JWT verification, rate limiting, circuit breakers.
 
 ---
 
-## Phase 13 — Analytics & ETL
+## Phase 18 — Analytics & ETL
 
 ### What You're Building
 Event ingestion, transformation pipeline, aggregated metrics.
+
+### 🎓 Prerequisite Study (Complete *before* coding this phase)
+- **Jon Gjengset:** Watch "Crust of Rust: Async/Await" to deeply understand what Tokio is doing with your ETL tasks.
+- **DDIA:** Read Chapter 9 (Consensus) and Chapter 11 (Stream Processing).
+- **MIT 6.824:** Watch Lectures 6–8 (Raft).
+- **Gossip Glomers:** Complete Challenge 5 (Kafka-style Log).
+- **Paper:** *In Search of an Understandable Consensus Algorithm (Raft)* (Ongaro & Ousterhout, 2014).
+- **Paper:** *MapReduce: Simplified Data Processing on Large Clusters* (Dean & Ghemawat, 2004).
+- **Paper:** *Questioning the Lambda Architecture* (Jay Kreps, 2014) — argues for the log-centric Kappa architecture over Lambda; directly shapes the architectural choice you make in this phase.
 
 ### Rust Concepts
 | Concept | Where It Appears |
@@ -717,34 +1040,107 @@ Replace `BufReader<File>` in the ETL Transform step with a `memmap2::Mmap` view 
 
 ---
 
+
 ---
 
-## Extended Phases (14–22)
+## Phase 19 — Full-Stack Frontend (Leptos)
 
-| Phase | Feature | Primary Learning |
-|---|---|---|
-| 14 | BEL Expression Language | Compiler: lexer → parser → type checker → eval |
-| 15 | Undo / Redo & History | Command pattern, CRDT undo, monotonic stack |
-| 16 | ☁️ Kubernetes & IaC | K8s, HPA, Pulumi Rust SDK, GitOps |
-| 17 | API Gateway & Rate Limiting | Tower Service, token/leaky/sliding window |
-| 18 | Analytics & ETL | SIMD aggregation, leader election, fencing tokens |
-| 19 | Frontend (Leptos) | Reactive signals, WASM, shared types |
-| 20 | ☁️ Microservice Extraction | Consistent hashing, session routing |
-| 21 | Webhooks & Audit Log | Outbox pattern, append-only log |
-| 22 | Templates, Publishing, Import/Export | Deep clone, CDN, `nom`, HyperLogLog |
+### What You're Building
+The full client: reactive page tree sidebar, block editor, collaborative cursor overlay, search modal (`Cmd+K`), database view switcher, notifications bell, settings pages, dark mode, and drag-and-drop block reordering (fractional index key generation compiled to WASM).
+
+### 🎓 Prerequisite Study (Complete *before* coding this phase)
+- **Leptos Book:** Read [The Leptos Book](https://book.leptos.dev/) — signals, server functions, SSR + hydration, and the WASM target; read before writing a single component.
+- **[Leptos Examples](https://github.com/leptos-rs/leptos/tree/main/examples)** — every Leptos pattern in practice; reference while building components.
+- **[cargo-leptos README](https://github.com/leptos-rs/cargo-leptos)** — hot-reload, WASM bundling, and the `--release` build pipeline; understand the toolchain before starting.
+- **Paper:** *A Spreadsheet with a Formula Language* (Bricklin) — optional but illuminating on reactive cell evaluation, the conceptual ancestor of reactive signals.
+
+### Rust Concepts
+| Concept | Where It Appears |
+|---|---|
+| Leptos signals + derived signals | Reactive block tree — signal per block's content, derived signal for render output |
+| Server functions (`#[server]`) | Data fetching without a separate API client — same Rust types on both sides |
+| `wasm32` feature gating | `libs/bel` formula evaluator compiled to WASM for client-side evaluation |
+| Shared DTOs via `libs/domain` | Same `Block`, `Page`, `UserId` types used in both server handlers and WASM components |
+| `Suspense` + `Resource` | Async data loading with streaming SSR |
+| SSR + hydration | Server renders HTML, WASM rehydrates interactivity — understand the split |
+
+### System Design Concepts
+- SSR + hydration: when the server renders, what the client rehydrates, and why the split matters for time-to-interactive
+- Optimistic UI updates — apply block edits locally before the server round-trip
+- WASM bundle size budget — `cargo-leptos --release` with `wasm-opt`; audit imports to keep under 500 KB
+- Drag-and-drop block reordering runs fractional index key generation entirely in WASM
+
+---
+
+
+---
+
+## Phase 20 — Distributed Session Routing
+
+### What You're Building
+Consistent hashing of WebSocket sessions across `collaboration-service` instances, instance heartbeat registry, failure detection, and Chandy-Lamport global snapshots.
+
+### 🎓 Prerequisite Study (Complete *before* coding this phase)
+- **DDIA:** Read Chapter 8 (The Trouble with Distributed Systems) — network partitions, unreliable clocks, process pauses; the theoretical grounding for every design decision in this phase.
+- **Paper:** *Dynamo: Amazon's Highly Available Key-Value Store* (DeCandia et al., Amazon, 2007) — consistent hashing + virtual nodes + eventual consistency in production; the conceptual groundwork for session routing and the failure detector.
+- **Paper:** *Chord: A Scalable Peer-to-peer Lookup Service for Internet Applications* (Stoica et al., 2001) — consistent hashing ring from first principles; read alongside Dynamo to understand the trade-offs.
+
+### System Design Concepts
+- Consistent hashing ring — minimal rehashing on node add/remove
+- Heartbeat + TTL failure detection → φ accrual failure detector (conceptual upgrade)
+- Gossip protocol for membership propagation
+- Chandy-Lamport distributed snapshot — consistent global state without stopping the world
+
+---
+
+
+---
+
+## Phase 21 — Webhooks & Audit Log
+
+### What You're Building
+Outbox-pattern webhook delivery with HMAC signing, exponential backoff retry queue, and an append-only hash-chained audit log.
+
+### 🎓 Prerequisite Study (Complete *before* coding this phase)
+- **DDIA:** Read Chapter 8 (The Trouble with Distributed Systems) — the Two Generals problem section; understand why exactly-once delivery is impossible before designing the outbox.
+- **Stripe Engineering Blog:** [Idempotency Keys](https://stripe.com/blog/idempotency) — practical patterns for idempotent API design; the outbox + idempotency key is the same pattern Stripe uses for payment retries.
+
+### System Design Concepts
+- Outbox pattern — write event atomically with DB change; poll separately
+- At-least-once delivery + idempotent receivers (the only achievable guarantee)
+- Exponential backoff with full jitter — why pure exponential causes thundering herds
+- Append-only audit log with hash chaining — tamper evidence
+
+---
+
 
 ---
 
 ## Learning Objectives Summary
 
-| Domain | Key Concepts |
+| Domain | Key Things Learned |
 |---|---|
-| **Intermediate Rust** | Traits, generics, lifetimes, `serde`, async/await |
-| **Advanced Rust** | Unsafe, CRDT internals, Tower traits, PhantomData, arenas |
-| **Lock-Free** | Atomics, CAS loops, `crossbeam`, `dashmap`, seqlock |
-| **SIMD** | `std::simd`, `memchr`, auto-vectorisation, WASM SIMD128 |
-| **Compiler** | Lexer, Pratt parsing, AST, type inference, tree-walking eval |
-| **Distributed Systems** | CRDTs, vector clocks, leader election, CAP/PACELC, gossip |
-| **Cloud & DevOps** | Docker, K8s, Pulumi, CI/CD, observability (RED/USE) |
-| **Security** | Argon2id, JWT RS256, OAuth2 PKCE, RBAC |
-
+| **Intermediate Rust** | Traits, generics, lifetimes, error handling, `serde`, async/await |
+| **Advanced Rust** | Unsafe, raw pointers, NaN-boxing (`u64` transmute), CRDT internals, Tower traits, PhantomData, arena allocation, `MaybeUninit`, `ManuallyDrop`, custom `GlobalAlloc` |
+| **Garbage Collection** | Tri-color mark-and-sweep, write barrier, GC roots (VM stack), `GcPtr` index-stable heap, GC threshold + stress-test mode, stop-the-world vs incremental trade-offs |
+| **Lock-Free & Concurrent** | `Atomic*` + memory ordering (SeqCst/AcqRel/Acquire/Release/Relaxed), CAS loops, `crossbeam` epoch reclamation, `dashmap`, Treiber stack, seqlock, lock-free queues |
+| **SIMD & Vectorisation** | `std::simd` portable SIMD, `memchr`, auto-vectorisation, AVX2 intrinsics, WASM SIMD128, checking assembly output |
+| **Cache-Conscious Design** | False sharing + `#[repr(align(64))]`, SoA vs AoS, `#[repr(C)]`, software prefetching, branch prediction hints, L1/L2/L3 cache hierarchy |
+| **Memory Allocators** | Bump/arena (`bumpalo`), `typed-arena`, `slotmap`, slab, pool, custom `GlobalAlloc` |
+| **Full-Stack Rust** | Leptos signals, server functions, WASM, `wasm32` feature gating, shared types |
+| **Microservices** | Service decomposition, NATS events, API gateway, saga, webhooks, audit log |
+| **System Design** | Caching, rate limiting, CDN, consistent hashing, circuit breakers, quotas, CQRS (read/write model separation), N+1 problem + DataLoader batching |
+| **Distributed Systems** | CRDTs, vector clocks, saga, leader election, distributed locks + fencing tokens, gossip (conceptual), Raft (conceptual), CAP/PACELC, anti-entropy, Chandy-Lamport snapshots, two-generals problem, quorum, WAL |
+| **Security** | Argon2id, JWT RS256, OAuth2 PKCE, CSRF, timing attacks, RBAC, API keys |
+| **Cloud** | RDS PostgreSQL, S3, ElastiCache, ECS/EKS, Pulumi Rust SDK |
+| **DSA — Trees** | DFS/BFS iterative, trie (autocomplete), rope (CRDT text), segment tree, Fenwick tree, interval tree (calendar), Myers diff (DP on trees) |
+| **DSA — Graphs** | Cycle detection, BFS shortest path, SCC (Tarjan's/Kosaraju's), topological sort, consistent hashing ring, union-find |
+| **DSA — DP** | Edit distance, Myers diff, LCS, 0-1 knapsack, interval DP (fractional index rebalancing), memoisation |
+| **DSA — Backtracking** | Parser combinators (`nom`), wildcard/regex matching, exhaustive path finding with pruning |
+| **DSA — Strings & Searching** | KMP (single-pattern), Aho-Corasick (multi-pattern), Rabin-Karp (rolling hash), binary search (snapshot lookup), monotonic stack (block sibling nav, undo collapsing), sliding window + two-pointer (notification dedup, rate limiting, pagination) |
+| **Compiler / Language** | Lexer (FSM), recursive descent, Pratt parsing, AST design, type inference, NaN-boxing, tri-color mark-and-sweep GC, bytecode compiler, stack machine VM, SQL transpiler, WASM target |
+| **DSA — Greedy** | Fractional indexing, activity selection, token/leaky bucket, greedy graph colouring, backoff with jitter, sweep line |
+| **DSA — Heaps/Probabilistic** | Min/max heap, k-way merge, reservoir sampling, HyperLogLog, Bloom filter, Count-Min Sketch |
+| **DevOps** | Docker multi-stage, Kubernetes HPA, CI/CD, GitOps, observability (RED/USE) |
+| **Data Modelling** | PostgreSQL schema design, JSONB, LTREE, adjacency list for trees, recursive CTEs, LISTEN/NOTIFY, sqlx migrations |
+| **ETL** | Append-only log, Lambda/Kappa architecture, materialized views, `nom` parsers |

@@ -21,6 +21,7 @@ See `docs/planning/ROADMAP.md` for the phase-by-phase learning plan and `docs/pl
 ### 1. Never Write Direct Rust Solutions
 
 - **Do NOT** produce ready-to-paste Rust implementations.
+- When suggesting code in the editor, only provide function signatures, type definitions, and boilerplate syntax. Do not implement internal logic or business logic unless explicitly requested via the Agent Manager.
 - Instead, point to the **exact resource** (blog post, book chapter, docs page, example repo) where I can learn the concept and figure out the code myself.
 - You **may** show illustrative code from **other languages** (Go, Java, TypeScript, Elixir, etc.) to explain a pattern — but the Rust implementation is always mine to write.
 

@@ -1,18 +1,129 @@
+use chrono::Utc;
+use getset::Getters;
+
+use crate::domain::{
+    errors::{DomainError, Result},
+    types::{DateTimeWithTimezone, PageId, UserId, Visibility, WorkspaceId},
+};
+
 // Page — maps to docs.pages table
-//   id: PageId, workspace_id: WorkspaceId, parent_id: Option<PageId>,
-//   created_by: UserId, last_edited_by: UserId, title: String,
-//   icon: Option<String>, cover_url: Option<String>, is_database: bool,
-//   visibility: Visibility, locked: bool, locked_by: Option<UserId>,
-//   version: i32, published_slug: Option<String>,
-//   created_at / updated_at / deleted_at: DateTimeWithTimezone
-//
-// impl Page:
-//   pub fn new(workspace_id, parent_id, created_by, title) -> domain::Result<Page>
-//     - trims title, errors on empty → DomainError::InvalidTitle
-//     - sets version = 0, is_database = false, visibility = Workspace, locked = false
-//     - sets created_at = updated_at = Utc::now(), deleted_at = None
-//     - sets created_by = last_edited_by = created_by arg
-//   pub fn is_deleted(&self) -> bool
+#[derive(Debug, Getters)]
+pub struct Page {
+    #[getset(get = "pub")]
+    id: PageId,
+    #[getset(get = "pub")]
+    workspace_id: WorkspaceId,
+    #[getset(get = "pub")]
+    parent_id: Option<PageId>,
+    #[getset(get = "pub")]
+    created_by: UserId,
+    #[getset(get = "pub")]
+    last_edited_by: UserId,
+    #[getset(get = "pub")]
+    title: String,
+    #[getset(get = "pub")]
+    icon: Option<String>,
+    #[getset(get = "pub")]
+    cover_url: Option<String>,
+    #[getset(get = "pub")]
+    is_database: bool,
+    #[getset(get = "pub")]
+    visibility: Visibility,
+    #[getset(get = "pub")]
+    locked: bool,
+    #[getset(get = "pub")]
+    locked_by: Option<UserId>,
+    #[getset(get = "pub")]
+    version: i32,
+    #[getset(get = "pub")]
+    published_slug: Option<String>,
+    #[getset(get = "pub")]
+    created_at: DateTimeWithTimezone,
+    #[getset(get = "pub")]
+    updated_at: DateTimeWithTimezone,
+    #[getset(get = "pub")]
+    deleted_at: Option<DateTimeWithTimezone>,
+}
+
+impl Page {
+    pub fn new(
+        workspace_id: WorkspaceId,
+        parent_id: Option<PageId>,
+        created_by: UserId,
+        title: String,
+    ) -> Result<Self> {
+        let title = title.trim().to_string();
+        if title.is_empty() {
+            return Err(DomainError::InvalidTitle(title));
+        }
+
+        let now = Utc::now();
+
+        Ok(Self {
+            id: PageId::generate(),
+            workspace_id,
+            parent_id,
+            created_by,
+            last_edited_by: created_by,
+            title,
+            icon: None,
+            cover_url: None,
+            is_database: false,
+            visibility: Visibility::Workspace,
+            locked: false,
+            locked_by: None,
+            version: 0,
+            published_slug: None,
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+        })
+    }
+
+    pub fn is_deleted(&self) -> bool {
+        self.deleted_at.is_some()
+    }
+
+    pub fn from_parts(
+        id: PageId,
+        workspace_id: WorkspaceId,
+        parent_id: Option<PageId>,
+        created_by: UserId,
+        last_edited_by: UserId,
+        title: String,
+        icon: Option<String>,
+        cover_url: Option<String>,
+        is_database: bool,
+        visibility: Visibility,
+        locked: bool,
+        locked_by: Option<UserId>,
+        version: i32,
+        published_slug: Option<String>,
+        created_at: DateTimeWithTimezone,
+        updated_at: DateTimeWithTimezone,
+        deleted_at: Option<DateTimeWithTimezone>,
+    ) -> Self {
+        Self {
+            id,
+            workspace_id,
+            parent_id,
+            created_by,
+            last_edited_by,
+            title,
+            icon,
+            cover_url,
+            is_database,
+            visibility,
+            locked,
+            locked_by,
+            version,
+            published_slug,
+            created_at,
+            updated_at,
+            deleted_at,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
